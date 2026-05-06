@@ -1,6 +1,6 @@
 # Intempt PHP SDK
 
-Server-side PHP client for the [Intempt](https://intempt.com) analytics platform. Matches the API surface of the [Node.js SDK](https://github.com/intempt/sdk-node).
+Server-side PHP client for the [Intempt](https://intempt.com) analytics platform. Matches the API surface of the [Node.js SDK](https://github.com/intempt/intempt-node).
 
 ## Installation
 
@@ -157,6 +157,10 @@ try {
 - PHP 8.1+
 - Guzzle 7+
 
+## Documentation
+
+Full documentation: [docs.intempt.com](https://docs.intempt.com)
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
