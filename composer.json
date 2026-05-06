@@ -1,10 +1,21 @@
 {
-  "name": "intempt/sdk",
-  "description": "Intempt PHP SDK — server-side event tracking, user identification, and analytics",
+  "name": "intempt/intempt-php",
+  "description": "Intempt PHP SDK — server-side event tracking, user identification, consent management, and analytics",
   "type": "library",
   "license": "MIT",
-  "keywords": ["intempt", "analytics", "tracking", "cdp", "events"],
-  "homepage": "https://github.com/intempt/php-sdk",
+  "keywords": ["intempt", "analytics", "tracking", "cdp", "events", "consent", "gdpr", "personalization"],
+  "homepage": "https://github.com/intempt/intempt-php",
+  "authors": [
+    {
+      "name": "Intempt",
+      "email": "support@intempt.com",
+      "homepage": "https://intempt.com"
+    }
+  ],
+  "support": {
+    "issues": "https://github.com/intempt/intempt-php/issues",
+    "source": "https://github.com/intempt/intempt-php"
+  },
   "require": {
     "php": ">=8.1",
     "guzzlehttp/guzzle": "^7.0"
@@ -23,6 +34,7 @@
     }
   },
   "minimum-stability": "stable",
+  "prefer-stable": true,
   "config": {
     "sort-packages": true
   }

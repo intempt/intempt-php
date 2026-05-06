@@ -5,7 +5,7 @@ Server-side PHP client for the [Intempt](https://intempt.com) analytics platform
 ## Installation
 
 ```bash
-composer require intempt/sdk
+composer require intempt/intempt-php
 ```
 
 ## Quick Start
