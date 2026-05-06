@@ -1,8 +1,10 @@
 {
   "name": "intempt/sdk",
-  "description": "Intempt PHP SDK — track events, identify users, and manage accounts",
+  "description": "Intempt PHP SDK — server-side event tracking, user identification, and analytics",
   "type": "library",
   "license": "MIT",
+  "keywords": ["intempt", "analytics", "tracking", "cdp", "events"],
+  "homepage": "https://github.com/intempt/php-sdk",
   "require": {
     "php": ">=8.1",
     "guzzlehttp/guzzle": "^7.0"
@@ -20,5 +22,8 @@
       "Intempt\\Tests\\": "tests/"
     }
   },
-  "minimum-stability": "stable"
+  "minimum-stability": "stable",
+  "config": {
+    "sort-packages": true
+  }
 }
