@@ -122,9 +122,10 @@ final class Transport
         $headers = substr((string) $raw, 0, $headerSize);
         $bodyText = substr((string) $raw, $headerSize);
 
-        if (!$this->config->keepAlive) {
-            $this->dropHandle();
-        }
+        // No drop for the keep-alive-off case: handle() never stored the handle
+        // in the first place, so there is nothing here to release. `keepAlive`
+        // is fixed at construction — merge() refuses it and carries it forward
+        // unchanged — so the two can never disagree.
 
         if ($status < 200 || $status >= 300) {
             throw new IntemptApiException(
