@@ -1,0 +1,83 @@
+# Cuts a release, only on a version tag.
+#
+# Packagist works differently to npm and PyPI: it reads tags straight off the
+# GitHub repository, so there is no artifact to upload and no token in this
+# workflow. What it does instead is refuse to tag something broken — once a tag
+# is public, Composer will resolve it forever, and the fix is a new version
+# rather than a replacement.
+#
+# One piece of setup is needed before the first release, on the Packagist side:
+#
+#   packagist.org -> Submit -> https://github.com/intempt/intempt-php
+#   then enable the GitHub service hook so later tags sync automatically
+#
+# Until the package is submitted, tagging here still produces a correct GitHub
+# Release; it just is not installable with `composer require` yet.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.3'
+          extensions: curl, json
+          coverage: xdebug
+          ini-values: zend.exception_ignore_args=1
+
+      - run: composer validate --strict
+
+      - run: composer install --prefer-dist --no-progress
+
+      # The same gates the PR runs. A release is not the place to find out the
+      # suite is red.
+      - run: vendor/bin/php-cs-fixer fix --dry-run --diff
+      - run: vendor/bin/phpstan analyse src --level=5 --no-progress
+      - run: vendor/bin/phpunit --no-coverage
+
+      # The version reaches the wire in the X-Intempt-Lib header, so a tag that
+      # disagrees with it means every request from that release reports a
+      # version nobody can install.
+      - name: Verify the tag matches Intempt::VERSION
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          SRC="$(php -r 'require "vendor/autoload.php"; echo Intempt\Intempt::VERSION;')"
+          if [ "$TAG" != "$SRC" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Intempt::VERSION $SRC"
+            exit 1
+          fi
+          echo "version $SRC"
+
+      # composer.json must not carry a `version` field — Packagist derives it
+      # from the tag, and a hardcoded one goes stale silently.
+      - name: Refuse a hardcoded version in composer.json
+        run: |
+          if php -r 'exit(array_key_exists("version", json_decode(file_get_contents("composer.json"), true)) ? 1 : 0);'; then
+            echo "composer.json has no version field, as it should"
+          else
+            echo "::error::composer.json carries a version field; Packagist derives it from the tag"
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
