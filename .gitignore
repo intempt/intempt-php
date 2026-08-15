@@ -5,3 +5,8 @@ composer.lock
 infection.log
 infection-summary.json
 coverage/
+build/
+
+# Local staging credentials for scripts/e2e.*  Never commit: these repos are public.
+.env.local
+.env
