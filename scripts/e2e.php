@@ -264,6 +264,16 @@ if ($feedId !== null) {
                 'limit' => 1,
             ]);
         } catch (IntemptApiException $error) {
+            // 401/403 means the credential was refused, which says nothing about
+            // the feed. Accepting it made this step pass during a run where every
+            // single call 401'd — a green tick for a test that proved nothing.
+            if ($error->status === 401 || $error->status === 403) {
+                throw new \RuntimeException(sprintf(
+                    'got %d (auth), so the feed was never evaluated',
+                    $error->status
+                ));
+            }
+
             return sprintf('rejected with %s, as it should be', (string) $error->status);
         }
 
@@ -275,7 +285,40 @@ if ($feedId !== null) {
 
 // --- buffered mode ----------------------------------------------------------
 
+/**
+ * Captures what the buffer logged, so a dropped batch cannot read as success.
+ *
+ * The retry table drops a non-retryable 4xx batch and logs it rather than
+ * throwing — right for a background buffer, wrong for a contract test. flush()
+ * returned cleanly during a run where every request 401'd, and this step
+ * reported PASS having delivered nothing.
+ */
+final class DeliveryWatcher implements \Intempt\Logger
+{
+    /** @var list<string> */
+    public array $errors = [];
+
+    public function error(string $message, array $context = []): void
+    {
+        $this->errors[] = $message;
+    }
+
+    public function warning(string $message, array $context = []): void
+    {
+        $this->errors[] = $message;
+    }
+
+    public function info(string $message, array $context = []): void
+    {
+    }
+
+    public function debug(string $message, array $context = []): void
+    {
+    }
+}
+
 $step('flush (5 events buffered, 1 request)', static function () use ($org, $project, $apiKey, $sourceId, $host, $scheme, $userId) {
+    $watcher = new DeliveryWatcher();
     $buffered = new Intempt([
         'org' => $org,
         'project' => $project,
@@ -284,12 +327,16 @@ $step('flush (5 events buffered, 1 request)', static function () use ($org, $pro
         'host' => $host,
         'scheme' => $scheme,
         'batch' => new BatchOptions(size: 50, flushMs: 60_000, maxQueue: 1_000),
+        'logger' => $watcher,
     ]);
     try {
         for ($i = 0; $i < 5; ++$i) {
             $buffered->track('sdk_e2e_buffered', ['userId' => $userId, 'properties' => ['i' => $i]]);
         }
         $buffered->flush();
+        if ($watcher->errors !== []) {
+            throw new \RuntimeException('flush dropped the batch: ' . substr($watcher->errors[0], 0, 120));
+        }
 
         return '5 events, 1 request';
     } finally {
