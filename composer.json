@@ -1,0 +1,36 @@
+{
+  "name": "intempt/intempt-php",
+  "description": "Intempt PHP SDK — server-side. Data in, decisions out.",
+  "type": "library",
+  "license": "Apache-2.0",
+  "keywords": ["intempt", "analytics", "cdp", "events", "personalization"],
+  "homepage": "https://intempt.com",
+  "require": {
+    "php": ">=8.1",
+    "ext-json": "*",
+    "ext-curl": "*"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^10.5",
+    "infection/infection": "^0.27",
+    "friendsofphp/php-cs-fixer": "^3.49",
+    "phpstan/phpstan": "^1.10"
+  },
+  "autoload": {
+    "psr-4": { "Intempt\\": "src/" }
+  },
+  "autoload-dev": {
+    "psr-4": { "Intempt\\Tests\\": "tests/" }
+  },
+  "scripts": {
+    "test": "phpunit",
+    "coverage": "XDEBUG_MODE=coverage phpunit --coverage-text",
+    "lint": "php-cs-fixer fix --dry-run --diff",
+    "analyse": "phpstan analyse",
+    "mutation": "XDEBUG_MODE=coverage infection --min-msi=85 --threads=4"
+  },
+  "config": {
+    "sort-packages": true,
+    "allow-plugins": { "infection/extension-installer": true }
+  }
+}

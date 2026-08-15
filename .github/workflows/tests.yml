@@ -1,0 +1,53 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 8.1 is the floor declared in composer.json; 8.4 is current stable.
+        php: ['8.1', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: shivammathur/setup-php@ccf2c627fe61b1b4d924adfcbd19d4a2d3105ab7 # v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, json
+          coverage: xdebug
+          # Keeps a stray call argument out of every stack trace. The SDK cannot
+          # fix this from inside — see tests/CredentialGuardTest.php.
+          ini-values: zend.exception_ignore_args=1
+      - run: composer install --prefer-dist --no-progress
+      - run: vendor/bin/php-cs-fixer fix --dry-run --diff
+      - run: vendor/bin/phpstan analyse src --level=5 --no-progress
+      - run: vendor/bin/phpunit --no-coverage
+
+  mutation:
+    # Pinned to one version on purpose: the mutants do not vary by runtime, so
+    # running this across the matrix triples a multi-minute job for no signal.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: shivammathur/setup-php@ccf2c627fe61b1b4d924adfcbd19d4a2d3105ab7 # v2
+        with:
+          php-version: '8.3'
+          extensions: curl, json
+          coverage: xdebug
+      - run: composer install --prefer-dist --no-progress
+      - name: Mutation score
+        run: vendor/bin/infection --min-msi=85 --threads=4 --no-progress --no-interaction
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: mutation-report
+          path: infection.log
+          retention-days: 14
