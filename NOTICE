@@ -1,0 +1,71 @@
+Intempt PHP SDK
+Copyright 2026 Intempt Technologies
+
+This product includes software developed at Intempt Technologies.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+------------------------------------------------------------------------------
+Third-party code
+------------------------------------------------------------------------------
+
+This product contains code derived from mixpanel-php:
+
+    https://github.com/mixpanel/mixpanel-php
+    Copyright Mixpanel, Inc.
+    Licensed under the Apache License, Version 2.0.
+
+Files containing derived code carry a header naming what was taken and what was
+changed, as required by Apache License 2.0 section 4(b).
+
+Derived, with modification
+--------------------------
+
+  src/Buffer.php
+      The consumer-strategy split, the chunking of a large payload into several
+      requests, and the retry loop follow mixpanel-php's ConsumerStrategies.
+
+      Changed: the retry policy is Intempt's. A 413 halves the batch width and
+      recovers by doubling after ten full-width successes; 429 honours
+      Retry-After; a circuit breaker opens after five consecutive failures; and
+      a close-initiated drain is bounded. mixpanel-php retries on a fixed
+      schedule with no width adaptation and no breaker.
+
+  src/Transport.php
+      The curl consumer and the response error mapping follow mixpanel-php's
+      CurlConsumer.
+
+      Changed: adds a per-request timeout, distinguishes retryable from
+      non-retryable status codes, keeps credentials out of every error surface,
+      and never coerces a platform id numerically.
+
+  src/Validate.php
+      timestamp() follows mixpanel-php's timestamp normalisation.
+      chunk() follows its batching helper.
+
+      Changed: chunk() rejects a size below one rather than looping forever;
+      timestamp() rejects non-finite input instead of coercing it.
+
+Not derived
+-----------
+
+Everything else is original: the Intempt wire format, the identity model
+(userId and accountId only), consent, commerce, feed recommendations, the
+opt-out gate, configuration handling and the whole test suite.
+
+NOT used
+--------
+
+mixpanel-php contains lib/ConsumerStrategies/SocketConsumer.php, which carries
+its own notice:
+
+    Copyright (c) 2013 Segment.io Inc. friends@segment.io
+    Licensed under the MIT License.
+
+No code from that file is used here, so its MIT notice does not attach to this
+product. It is recorded because anyone deriving further from mixpanel-php needs
+to know that one file is MIT inside an otherwise Apache 2.0 project.
+
+------------------------------------------------------------------------------
+
+mixpanel-php vendors no NOTICE file of its own, so nothing further is required
+under Apache License 2.0 section 4(d).
