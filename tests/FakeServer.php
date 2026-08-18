@@ -105,7 +105,14 @@ final class FakeServer
     public function stop(): void
     {
         if (is_resource($this->process)) {
-            proc_terminate($this->process, SIGTERM);
+            // 15 is SIGTERM. Written as a literal, not the SIGTERM constant,
+            // because that constant is only defined when the pcntl extension
+            // is loaded — and pcntl is neither an ext-* requirement of this
+            // package nor installed in CI (extensions: curl, json in
+            // .github/workflows/tests.yml), so referencing the constant
+            // fataled with "Undefined constant" in every environment that
+            // matches CI exactly.
+            proc_terminate($this->process, 15);
             proc_close($this->process);
             $this->process = null;
         }

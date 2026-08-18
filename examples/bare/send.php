@@ -28,7 +28,25 @@ use Intempt\Intempt;
 use Intempt\IntemptApiException;
 use Intempt\IntemptConfigException;
 
-require __DIR__ . '/../../vendor/autoload.php';
+// Two ways this file gets run: from within this SDK's own repo (its own
+// vendor/ two levels up), or installed as a dependency in a consumer's
+// project (that consumer's vendor/ four levels up, past this package's own
+// examples/bare/ and vendor/intempt/intempt-php/). Try both rather than
+// assuming the repo layout, which fatals under a real `composer require`.
+$autoloadCandidates = [
+    __DIR__ . '/../../vendor/autoload.php',
+    __DIR__ . '/../../../../autoload.php',
+];
+foreach ($autoloadCandidates as $candidate) {
+    if (is_file($candidate)) {
+        require $candidate;
+        break;
+    }
+}
+if (!class_exists(Intempt::class)) {
+    fwrite(STDERR, 'could not locate vendor/autoload.php — run "composer install" first' . PHP_EOL);
+    exit(2);
+}
 
 $missing = [];
 foreach (['INTEMPT_ORG', 'INTEMPT_PROJECT', 'INTEMPT_API_KEY'] as $name) {
