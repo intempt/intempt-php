@@ -13,7 +13,7 @@ namespace Intempt;
 
 final class Intempt
 {
-    public const VERSION = '1.0.0';
+    public const VERSION = '1.0.1';
 
     /** Reserved event name the platform interprets as an identity write. */
     public const IDENTIFY_EVENT = 'Identify';

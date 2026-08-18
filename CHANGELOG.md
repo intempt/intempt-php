@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.1 — unreleased
+
+- Fix: `tests/FakeServer.php` and `tests/ExampleAppTest.php` referenced the
+  pcntl-only `SIGTERM` constant without pcntl being an installed extension,
+  fataling the suite in any environment matching CI's extension set
+  (`curl`, `json`). Replaced with the literal `15`.
+- Fix: `examples/bare/send.php` and `examples/basic/app.php` hardcoded
+  `require __DIR__.'/../../vendor/autoload.php'`, which only resolves when
+  the example runs from within this repo. Installed as a real Composer
+  dependency, that path lands one level short of the consumer's own
+  `vendor/autoload.php` and fatals. Both now try the repo-relative and the
+  installed-package-relative path.
+
 ## 1.0.0 — unreleased
 
 First release. Server-side SDK, Apache 2.0, derived from mixpanel-php; see
