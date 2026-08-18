@@ -33,7 +33,10 @@ final class ExampleAppTest extends TestCase
     public static function tearDownAfterClass(): void
     {
         if (is_resource(self::$appProcess)) {
-            proc_terminate(self::$appProcess, SIGTERM);
+            // 15 is SIGTERM, used as a literal rather than the pcntl constant
+            // for the same reason as tests/FakeServer.php: pcntl is not an
+            // ext-* requirement of this package and is not installed in CI.
+            proc_terminate(self::$appProcess, 15);
             proc_close(self::$appProcess);
             self::$appProcess = null;
         }
