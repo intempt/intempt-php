@@ -48,7 +48,21 @@ declare(strict_types=1);
 // just stop corrupting the response.
 ob_start();
 
-require_once __DIR__ . '/../../vendor/autoload.php';
+// Two ways this file gets run: from within this SDK's own repo (its own
+// vendor/ two levels up), or installed as a dependency in a consumer's
+// project (that consumer's vendor/ four levels up, past this package's own
+// examples/basic/ and vendor/intempt/intempt-php/). Try both rather than
+// assuming the repo layout, which fatals under a real `composer require`.
+$autoloadCandidates = [
+    __DIR__ . '/../../vendor/autoload.php',
+    __DIR__ . '/../../../../autoload.php',
+];
+foreach ($autoloadCandidates as $candidate) {
+    if (is_file($candidate)) {
+        require_once $candidate;
+        break;
+    }
+}
 
 use Intempt\ErrorLogLogger;
 use Intempt\Intempt;
