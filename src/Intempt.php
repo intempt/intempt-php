@@ -13,6 +13,9 @@ namespace Intempt;
 
 final class Intempt
 {
+    /** A response the service did not answer is reported as such rather than guessed at. */
+    private const UNANSWERED = 'off';
+
     public const VERSION = '1.0.1';
 
     /** Reserved event name the platform interprets as an identity write. */
@@ -189,6 +192,163 @@ final class Intempt
             $this->config->projectPath('/feeds/' . rawurlencode($feedId) . '/data'),
             $body
         );
+    }
+
+    // -- flags -------------------------------------------------------------
+
+    /**
+     * The value assigned to this person for $key, or $defaultValue if the service did not answer.
+     *
+     * Ask for a KEY, never a mode. Whether the key names an experiment, a personalization or a
+     * flag is the platform's business: its serving query filters on channel and status and never
+     * on mode. The older surface put the mode in the method name, which forced a caller to know
+     * which it was before reading it and grew combinatorially with every new mode.
+     */
+    public function variation(string $key, FlagContext $context, mixed $defaultValue): mixed
+    {
+        return $this->variationDetail($key, $context, $defaultValue)->value;
+    }
+
+    /**
+     * As variation(), plus WHY.
+     */
+    public function variationDetail(
+        string $key,
+        FlagContext $context,
+        mixed $defaultValue
+    ): FlagDetail {
+        $this->assertOpen();
+        Validate::nonBlank($key, 'variation', 'key');
+
+        foreach ($this->chooseOrEmpty($context, [$key]) as $choice) {
+            if (($choice['name'] ?? null) !== $key) {
+                continue;
+            }
+            $body = $choice['body'] ?? null;
+
+            return new FlagDetail(
+                $body ?? $defaultValue,
+                is_string($choice['reason'] ?? null) ? $choice['reason'] : self::UNANSWERED,
+                is_string($choice['group'] ?? null) ? $choice['group'] : null
+            );
+        }
+
+        return new FlagDetail($defaultValue, self::UNANSWERED);
+    }
+
+    /**
+     * Every key assigned to this person, in one call.
+     *
+     * @return array<string, mixed>
+     */
+    public function allFlags(FlagContext $context): array
+    {
+        $this->assertOpen();
+        $out = [];
+        foreach ($this->chooseOrEmpty($context, null) as $choice) {
+            $name = $choice['name'] ?? null;
+            if (is_string($name) && $name !== '') {
+                $out[$name] = $choice['body'] ?? null;
+            }
+        }
+
+        return $out;
+    }
+
+    public function boolVariation(string $key, FlagContext $context, bool $defaultValue): bool
+    {
+        $value = $this->variation($key, $context, $defaultValue);
+
+        // A served value of the wrong type is a misconfiguration, not something to coerce:
+        // (bool) 'false' is true, and a silent coercion is indistinguishable from a real answer.
+        return is_bool($value) ? $value : $defaultValue;
+    }
+
+    public function stringVariation(string $key, FlagContext $context, string $defaultValue): string
+    {
+        $value = $this->variation($key, $context, $defaultValue);
+
+        return is_string($value) ? $value : $defaultValue;
+    }
+
+    public function numberVariation(
+        string $key,
+        FlagContext $context,
+        int|float $defaultValue
+    ): int|float {
+        $value = $this->variation($key, $context, $defaultValue);
+
+        // is_numeric() would accept the STRING '42', so the check is on type, not value.
+        // No bool guard is needed here: unlike Python, PHP's is_int() is false for true.
+        return is_int($value) || is_float($value) ? $value : $defaultValue;
+    }
+
+    /**
+     * @param array<string, mixed> $defaultValue
+     * @return array<string, mixed>
+     */
+    public function jsonVariation(string $key, FlagContext $context, array $defaultValue): array
+    {
+        $value = $this->variation($key, $context, $defaultValue);
+
+        return is_array($value) ? $value : $defaultValue;
+    }
+
+    /**
+     * Returns immediately.
+     *
+     * Present so the cross-SDK surface is the same everywhere, and so a caller porting from an SDK
+     * that polls a local flag store does not have to remove the call. Evaluation here is remote:
+     * each variation() is a request, so there is no local state to wait for.
+     */
+    public function waitForInitialization(?int $timeoutMs = null): void
+    {
+        $this->assertOpen();
+    }
+
+    /**
+     * A transport failure returns no choices rather than throwing.
+     *
+     * This is the entire reason $defaultValue is required: a network failure, a 5xx or a timeout
+     * must resolve to the value the caller chose. A flag SDK that throws when the service is
+     * unreachable takes the application down with it, which is the opposite of what a kill switch
+     * is for. A validation mistake still throws, because that is a programming error the caller
+     * can fix rather than a runtime condition to absorb.
+     *
+     * @param list<string>|null $names
+     * @return list<array<string, mixed>>
+     */
+    private function chooseOrEmpty(FlagContext $context, ?array $names): array
+    {
+        $body = Validate::compact([
+            'identification' => Validate::compact([
+                'userId' => $context->userId,
+                'profileId' => $context->profileId,
+                'sourceId' => $this->config->sourceId !== null
+                    ? (string) $this->config->sourceId
+                    : null,
+            ]),
+            'names' => $names,
+            'device' => 'all',
+        ]);
+
+        try {
+            $response = $this->transport->post(
+                $this->config->projectPath('/optimization/choose-api'),
+                $body
+            );
+        } catch (\Throwable $e) {
+            $this->config->logger->warning('[intempt] flag evaluation failed, using defaults');
+
+            return [];
+        }
+
+        if (!is_array($response)) {
+            return [];
+        }
+        $choices = $response['choices'] ?? null;
+
+        return is_array($choices) ? array_values($choices) : [];
     }
 
     // -- privacy ----------------------------------------------------------
