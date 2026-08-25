@@ -338,7 +338,12 @@ final class Intempt
                 $body
             );
         } catch (\Throwable $e) {
-            $this->config->logger->warning('[intempt] flag evaluation failed, using defaults');
+            // config->logger is nullable; config->logger() is the accessor that falls back to a
+            // NullLogger. Reaching for the property directly made the error handler itself throw,
+            // turning a recoverable service failure into a fatal - the exact opposite of what this
+            // catch exists to do. Found by the sample gate, because the unit tests only ever
+            // exercised a 500 with a logger present.
+            $this->config->logger()->warning('[intempt] flag evaluation failed, using defaults');
 
             return [];
         }

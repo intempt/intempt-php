@@ -24,6 +24,7 @@
 
 declare(strict_types=1);
 
+use Intempt\FlagContext;
 use Intempt\Intempt;
 use Intempt\IntemptApiException;
 use Intempt\IntemptConfigException;
@@ -115,6 +116,32 @@ try {
     // A consent record is explicit and separate from optOut(), which only gates
     // this client.
     $intempt->consent->grant(['userId' => $userId, 'category' => 'marketing']);
+
+    // --- flags ---------------------------------------------------------
+    // Ask for a KEY. Whether it names an experiment, a personalization or a
+    // flag is the platform's business, and this call does not change when that
+    // does.
+    $context = new FlagContext(userId: $userId, profileId: 'device-abc');
+
+    // The default is not optional and it is a real decision: it is what you get
+    // when Intempt cannot be reached. Choose the behaviour you already have.
+    $cta = $intempt->stringVariation('pricing_cta', $context, 'Get started');
+    echo 'variation  -> pricing_cta = ' . $cta . PHP_EOL;
+
+    // The reason separates a deliberate holdout from an outage. Without it both
+    // are the same absent value and you cannot tell a rollout decision from a
+    // failure.
+    $detail = $intempt->variationDetail('new_checkout', $context, false);
+    echo sprintf(
+        'detail     -> new_checkout = %s (reason=%s, variant=%s)',
+        var_export($detail->value, true),
+        $detail->reason,
+        $detail->variant ?? 'none'
+    ) . PHP_EOL;
+
+    $flags = $intempt->allFlags($context);
+    echo 'allFlags   -> ' . count($flags) . ' key(s): '
+        . (implode(', ', array_keys($flags)) ?: '(none)') . PHP_EOL;
 
     $feedId = getenv('INTEMPT_FEED_ID');
     if ($feedId !== false && $feedId !== '') {
