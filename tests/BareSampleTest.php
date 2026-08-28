@@ -203,10 +203,10 @@ final class BareSampleTest extends TestCase
         // Every other call succeeds; only the feed read fails. The sample must
         // still exit 0, because a recommendation is an enhancement.
         //
-        // The sample makes exactly 11 requests: six track calls, one consent
-        // record, three flag evaluations, then the feed. Counted from the server
+        // The sample makes exactly 10 requests: six track calls, one consent
+        // record, two flag evaluations, then the feed. Counted from the server
         // rather than assumed.
-        self::server()->expectMany(10, 200, '{}');
+        self::server()->expectMany(9, 200, '{}');
         self::server()->expectMany(4, 503, '{}');
 
         $result = $this->runSample(['INTEMPT_FEED_ID' => '5292']);
@@ -215,24 +215,25 @@ final class BareSampleTest extends TestCase
         self::assertStringContainsString('default order', $result['stdout']);
     }
 
-    public function testTheSampleMakesExactlyElevenRequestsWithAFeed(): void
+    public function testTheSampleMakesExactlyTenRequestsWithAFeed(): void
     {
         // Pins the count the two tests above depend on, so a new call in the
         // sample fails here rather than silently shifting which reply the feed
-        // read receives. It did exactly that when the three flag evaluations
-        // were added, which is the whole point of pinning it.
+        // read receives. It did exactly that when the flag evaluations were
+        // added, and again when variationDetail was withdrawn -- which is the
+        // whole point of pinning it.
         self::server()->expectMany(20, 200, '{}');
 
         $this->runSample(['INTEMPT_FEED_ID' => '5292']);
 
-        self::assertCount(11, self::server()->requests());
+        self::assertCount(10, self::server()->requests());
     }
 
     public function testAFailingFlagEvaluationReturnsTheDefaultInsteadOfFailingTheRun(): void
     {
         // A flag lookup must never take the process down. The six track calls
         // and the consent record succeed; every reply after them is a 503, so
-        // all three evaluations fail and the sample still exits 0 printing the
+        // both evaluations fail and the sample still exits 0 printing the
         // defaults the caller chose.
         self::server()->expectMany(7, 200, '{}');
         self::server()->expectMany(20, 503, '{}');
@@ -241,6 +242,5 @@ final class BareSampleTest extends TestCase
 
         self::assertSame(0, $result['status'], $result['stdout'] . $result['stderr']);
         self::assertStringContainsString('pricing_cta = Get started', $result['stdout']);
-        self::assertStringContainsString('reason=off', $result['stdout']);
     }
 }
