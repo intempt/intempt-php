@@ -128,17 +128,6 @@ try {
     $cta = $intempt->stringVariation('pricing_cta', $context, 'Get started');
     echo 'variation  -> pricing_cta = ' . $cta . PHP_EOL;
 
-    // The reason separates a deliberate holdout from an outage. Without it both
-    // are the same absent value and you cannot tell a rollout decision from a
-    // failure.
-    $detail = $intempt->variationDetail('new_checkout', $context, false);
-    echo sprintf(
-        'detail     -> new_checkout = %s (reason=%s, variant=%s)',
-        var_export($detail->value, true),
-        $detail->reason,
-        $detail->variant ?? 'none'
-    ) . PHP_EOL;
-
     $flags = $intempt->allFlags($context);
     echo 'allFlags   -> ' . count($flags) . ' key(s): '
         . (implode(', ', array_keys($flags)) ?: '(none)') . PHP_EOL;

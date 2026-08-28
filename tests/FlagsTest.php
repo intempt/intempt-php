@@ -30,31 +30,31 @@ final class FlagsTest extends TestCase
         self::server()->expect(200, json_encode(['choices' => $choices], JSON_THROW_ON_ERROR));
     }
 
-    public function testReturnsTheServedValueAndItsReason(): void
+    public function testReturnsTheServedValue(): void
     {
+        // variation(), not variationDetail() -- the detail method is internal until the platform
+        // sends a reason. Note this fixture supplies 'group' and 'reason' and the serving response
+        // carries NEITHER today, which is exactly why asserting on them proved nothing.
         $this->expectChoices([
             ['name' => 'checkout_v2', 'group' => 'B', 'body' => true, 'reason' => 'targeted'],
         ]);
 
-        $detail = $this->client()->variationDetail('checkout_v2', $this->context(), false);
-
-        self::assertTrue($detail->value);
-        self::assertSame('B', $detail->variant);
-        self::assertSame('targeted', $detail->reason);
+        self::assertTrue($this->client()->variation('checkout_v2', $this->context(), false));
     }
 
-    public function testReportsAHoldoutRatherThanAnAbsentAnswer(): void
+    public function testReturnsTheDefaultWhenTheServedBodyIsNull(): void
     {
-        // The whole reason a reason exists: before it, a held-back person and a failed request
-        // were both an absent entry, so a caller could not tell them apart.
+        // NOT the holdout case, which cannot be asserted: a held-back person's experience is
+        // absent from the response entirely rather than present with a cause. Telling a holdout
+        // from an outage needs a reason the platform does not send.
         $this->expectChoices([
-            ['name' => 'checkout_v2', 'body' => null, 'reason' => 'holdout'],
+            ['name' => 'checkout_v2', 'body' => null],
         ]);
 
-        $detail = $this->client()->variationDetail('checkout_v2', $this->context(), 'fallback');
-
-        self::assertSame('holdout', $detail->reason);
-        self::assertSame('fallback', $detail->value);
+        self::assertSame(
+            'fallback',
+            $this->client()->variation('checkout_v2', $this->context(), 'fallback')
+        );
     }
 
     public function testReturnsTheDefaultWhenTheServiceIsUnreachable(): void
@@ -71,10 +71,10 @@ final class FlagsTest extends TestCase
     {
         $this->expectChoices([]);
 
-        $detail = $this->client()->variationDetail('never_created', $this->context(), 'safe');
-
-        self::assertSame('safe', $detail->value);
-        self::assertSame('off', $detail->reason);
+        self::assertSame(
+            'safe',
+            $this->client()->variation('never_created', $this->context(), 'safe')
+        );
     }
 
     public function testRefusesAnEmptyKey(): void

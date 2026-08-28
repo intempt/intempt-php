@@ -206,13 +206,22 @@ final class Intempt
      */
     public function variation(string $key, FlagContext $context, mixed $defaultValue): mixed
     {
-        return $this->variationDetail($key, $context, $defaultValue)->value;
+        return $this->variationDetailInternal($key, $context, $defaultValue)->value;
     }
 
     /**
-     * As variation(), plus WHY.
+     * Internal. NOT public, deliberately.
+     *
+     * It returns a reason, and the platform does not send one: a held-back person's experience is
+     * absent from the evaluation response entirely rather than present with a cause. So every
+     * reason would read "off" -- including for someone who WAS targeted and did receive the
+     * variant. That is a wrong answer, not a missing one, and a method whose only job is
+     * explaining why must not guess.
+     *
+     * variation() uses it for the value, which is correct either way. It becomes public when the
+     * serving contract carries a reason.
      */
-    public function variationDetail(
+    private function variationDetailInternal(
         string $key,
         FlagContext $context,
         mixed $defaultValue
@@ -228,8 +237,7 @@ final class Intempt
 
             return new FlagDetail(
                 $body ?? $defaultValue,
-                is_string($choice['reason'] ?? null) ? $choice['reason'] : self::UNANSWERED,
-                is_string($choice['group'] ?? null) ? $choice['group'] : null
+                is_string($choice['reason'] ?? null) ? $choice['reason'] : self::UNANSWERED
             );
         }
 
