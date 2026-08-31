@@ -9,10 +9,12 @@ permissions:
   contents: read
 
 jobs:
-  # R36: the platform decides which variant a person gets. An SDK that derives its own
-  # bucket can disagree with the server, and the same person is then served differently
-  # depending on the channel they arrive through — silently, because each side is
-  # internally consistent. Runs without install so it cannot be skipped.
+  # EXP-ASSIGN-001..005: the platform decides which variant a person gets. An SDK that
+  # derives its own bucket can disagree with the server, and the same person is then
+  # served differently depending on the channel they arrive through — silently, because
+  # each side is internally consistent. Runs without install so it cannot be skipped.
+  # Cited by requirement id so the reference resolves: the rule's old numbering did not
+  # exist in brain, and a CI job citing a dead reference cannot be checked by a reader.
   bucketing:
     name: Server-only bucketing
     runs-on: ubuntu-latest
@@ -21,7 +23,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: No SDK derives buckets locally (R36)
+      - name: No SDK derives buckets locally (EXP-ASSIGN-001..005)
         run: node scripts/check-no-local-bucketing.mjs
         env:
           GUARD_SRC: src

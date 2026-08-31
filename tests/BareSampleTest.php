@@ -203,9 +203,9 @@ final class BareSampleTest extends TestCase
         // Every other call succeeds; only the feed read fails. The sample must
         // still exit 0, because a recommendation is an enhancement.
         //
-        // The sample makes exactly 10 requests: six track calls, one consent
-        // record, two flag evaluations, then the feed. Counted from the server
-        // rather than assumed.
+        // The sample makes exactly 11 requests: six track calls, one consent
+        // record, three flag evaluations (stringVariation, jsonVariation,
+        // allFlags), then the feed. Counted from the server rather than assumed.
         self::server()->expectMany(9, 200, '{}');
         self::server()->expectMany(4, 503, '{}');
 
@@ -215,18 +215,19 @@ final class BareSampleTest extends TestCase
         self::assertStringContainsString('default order', $result['stdout']);
     }
 
-    public function testTheSampleMakesExactlyTenRequestsWithAFeed(): void
+    public function testTheSampleMakesExactlyElevenRequestsWithAFeed(): void
     {
         // Pins the count the two tests above depend on, so a new call in the
         // sample fails here rather than silently shifting which reply the feed
         // read receives. It did exactly that when the flag evaluations were
-        // added, and again when variationDetail was withdrawn -- which is the
-        // whole point of pinning it.
+        // added, again when variationDetail was withdrawn, and again when
+        // jsonVariation gained its first caller -- which is the whole point of
+        // pinning it.
         self::server()->expectMany(20, 200, '{}');
 
         $this->runSample(['INTEMPT_FEED_ID' => '5292']);
 
-        self::assertCount(10, self::server()->requests());
+        self::assertCount(11, self::server()->requests());
     }
 
     public function testAFailingFlagEvaluationReturnsTheDefaultInsteadOfFailingTheRun(): void

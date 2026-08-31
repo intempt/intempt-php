@@ -1,15 +1,26 @@
 #!/usr/bin/env node
 /**
- * R36: bucket derivation is server-only.
- *
- * The platform decides which variant a person gets, by hashing (experienceId, identifier) and
- * taking the result modulo the bucket count. No SDK may do that arithmetic itself.
+ * Bucket derivation is server-only. Governed by EXP-ASSIGN-001..005 in
+ * `brain/product/specs/experiences/experiences-spec.md`.
  *
  * The failure this prevents is silent and unreportable: two derivations that disagree serve the
  * same person a different variant depending on which channel they arrive through. Nothing in the
  * product surfaces it, because each side is internally consistent.
  *
- * This was true of all SDKs by accident before it was a rule. This guard makes it a fact.
+ * HOW THE PLATFORM ACTUALLY DECIDES — stated because an earlier version of this comment claimed the
+ * platform "hashes (experienceId, identifier) and takes the result modulo the bucket count", and
+ * that is false in every part. `VariantChooserService` holds `private final Random random = new
+ * SecureRandom()` and draws with `random.nextInt(100)`; stability comes from PERSISTING that draw
+ * under a `VariantChooseKey`, not from any hash; and `10000` appears nowhere in the service's
+ * experience package. A guard whose stated reason is wrong invites someone to "fix" the guard.
+ *
+ * The rule survives the correction, and is in fact stronger for it: an SDK cannot re-derive a draw
+ * it did not witness, so there is no client-side arithmetic that could ever agree with the server.
+ *
+ * The patterns below are therefore aimed at what an SDK author would INVENT, not at what the
+ * platform does — a hash, a modulo, and a percentage compare are the three shapes local bucketing
+ * always takes. `% 100` matters most: it is the platform's own range, so it is the arithmetic a
+ * reimplementation would most plausibly reach for, and it is what this guard used to wave through.
  *
  * Zero dependencies, so it runs before install and on a machine that cannot build this SDK.
  *
@@ -33,8 +44,16 @@ const SKIP_DIR = /^(node_modules|\.git|dist|build|vendor|target|__pycache__|\.ve
 /** Hashing primitives, and the bucket arithmetic itself. */
 const PATTERNS = [
   [/\b(sha-?256|sha-?1|md5|murmur|fnv|crc32|xxhash)\b/i, 'a hashing primitive'],
-  [/%\s*10000\b|\bmod\s+10000\b/i, 'modulo the platform bucket count'],
+  // The platform's own range. `$bucket = $crc % 100` with a percentage compare is local bucketing
+  // using the exact arithmetic the server uses, and it passed this guard silently until it was
+  // planted deliberately. `\b` after 100 keeps `% 10000` on its own line below.
+  [/%\s*100\b|\bmod\s+100\b/i, 'modulo 100 — the range the platform draws in'],
+  [/%\s*10000\b|\bmod\s+10000\b/i, 'modulo a bucket count'],
   [/\bBUCKETS?_PER_|\bTOTAL_BUCKETS\b/i, 'bucket arithmetic'],
+  // The compare that turns a number into an assignment. Catches the second half of the pair above,
+  // so removing only the modulo does not make the derivation invisible again.
+  [/\b(bucket|bucketed|bucketing|percentile|rollout_?(share|percent\w*))\b\s*[=<>!]/i,
+    'a local bucket or rollout-share comparison'],
   [/createHash|MessageDigest|hashlib|CryptoKit|\bDigest\b/, 'a hash construction'],
 ];
 
@@ -72,7 +91,7 @@ for (const r of roots) {
 const problems = [];
 if (hits.length) {
   problems.push(
-    `bucket derivation must be server-only (R36) — ${hits.length} occurrence(s):\n    ` +
+    `bucket derivation must be server-only (EXP-ASSIGN-001..005) — ${hits.length} occurrence(s):\n    ` +
       hits.join('\n    ')
   );
 }

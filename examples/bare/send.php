@@ -121,13 +121,28 @@ try {
     // Ask for a KEY. Whether it names an experiment, a personalization or a
     // flag is the platform's business, and this call does not change when that
     // does.
-    $context = new FlagContext(userId: $userId, profileId: 'device-abc');
+    //
+    // ONE identifier, on purpose. A profileId alongside a configured sourceId
+    // takes precedence and the userId is then never read, so passing both would
+    // segment on the device while looking like it segments on the person.
+    // sessionId is optional; without it every exposure lands in a session the
+    // service names "default" and a once-per-visit experience serves once ever.
+    $context = new FlagContext(userId: $userId, sessionId: 'sample-session');
 
     // The default is not optional and it is a real decision: it is what you get
     // when Intempt cannot be reached. Choose the behaviour you already have.
     $cta = $intempt->stringVariation('pricing_cta', $context, 'Get started');
     echo 'variation  -> pricing_cta = ' . $cta . PHP_EOL;
 
+    // A JSON body comes back as-is. An object gives string keys, an array gives
+    // a list — hence array-key, not string.
+    $limits = $intempt->jsonVariation('rate_limits', $context, ['perMinute' => 60]);
+    echo 'jsonVariation -> ' . json_encode($limits) . PHP_EOL;
+
+    // allFlags is for enumerating, not for a request path: it makes the service
+    // evaluate every running Server experience, and every evaluation reports an
+    // exposure — including for keys this code never reads. Two keys means two
+    // variation() calls, not one allFlags(). See docs/CONVENTIONS.md.
     $flags = $intempt->allFlags($context);
     echo 'allFlags   -> ' . count($flags) . ' key(s): '
         . (implode(', ', array_keys($flags)) ?: '(none)') . PHP_EOL;

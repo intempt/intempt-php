@@ -24,11 +24,40 @@ to this repo. Where the two disagree, the contract wins and this file is the bug
   is the single thing such a method exists to tell you. It stays internal until the platform sends
   a reason. Do not re-add it, and do not document it.
 - **Evaluation is REMOTE only.** No local rule engine, no flag store to poll, and no hashing
-  utility: the server buckets, so no second implementation can disagree with it. `check-no-local-bucketing.mjs`
-  enforces this in CI and a new bucketing helper will fail the build.
+  utility: the server decides, so no second implementation can disagree with it.
+  `check-no-local-bucketing.mjs` enforces this in CI (EXP-ASSIGN-001..005) and a new bucketing
+  helper will fail the build. Note what the server actually does, because the guard used to claim
+  otherwise: `VariantChooserService` draws with `SecureRandom().nextInt(100)` and PERSISTS the draw
+  under a `VariantChooseKey`. There is no hash and no bucket count. An SDK cannot re-derive a draw
+  it never witnessed, which is why the rule is absolute rather than a matter of matching algorithms.
 - **A validation mistake throws; a service problem does not.** A blank key or a missing default is a
   programming error the caller can fix, so it fails loudly at the call site. A 5xx is a runtime
   condition to absorb.
+
+## Flags: three things the surface does not say for itself
+
+**`allFlags()` is not a cheaper `variation()`. It enrols the caller in everything.** Omitting `names`
+makes the service evaluate every running Server experience, and every evaluation reports an exposure
+(`ChooserHelper.display` -> `publishEvent` -> Kafka). That is `EXP-SERVE-003` behaving as specified,
+not a defect — but the effect on this surface is that one call at request start records an exposure
+against every running experiment, including keys the code never reads, inflating those denominators
+with people who were shown nothing. Use it to enumerate or to debug; read two keys with two
+`variation()` calls. The endpoint has no suppress flag today, so this cannot be fixed in the SDK.
+
+**Identifier precedence is not the argument order.** `buildAudienceRequest` tests
+`sourceId != null && profileId` non-blank FIRST and only then falls through to `userId`. A context
+carrying both, from a client with a configured `sourceId`, segments on the PROFILE and the `userId`
+is never read. `EXP-ASSIGN-005` makes the identifier the caller's choice, which requires them to
+know this. There is deliberately **no `accountId`**: `Identification` carries only `sourceId`,
+`profileId` and `userId`, an account-only request makes the service throw, and this SDK absorbs
+service failures — so such a caller would silently get their default for every flag, forever.
+
+**`device` is hardcoded to `all`, and that is load-bearing, not laziness.** `ExperienceRequest`
+splices it into the serving SQL as a raw predicate: a null device becomes the string `"0"`, which
+matches nothing ever; `ALL` becomes `"1"`. Sending it is the difference between the surface working
+and every flag returning its default. The trade is real and accepted: device targeting is *bypassed*
+rather than honoured, so a rollout scoped to mobile is also served to a PHP backend, which has no
+user agent to read anyway.
 
 ## Errors
 

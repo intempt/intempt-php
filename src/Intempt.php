@@ -227,7 +227,7 @@ final class Intempt
         mixed $defaultValue
     ): FlagDetail {
         $this->assertOpen();
-        Validate::nonBlank($key, 'variation', 'key');
+        Validate::flagKey($key, 'variation');
 
         foreach ($this->chooseOrEmpty($context, [$key]) as $choice) {
             if (($choice['name'] ?? null) !== $key) {
@@ -235,10 +235,12 @@ final class Intempt
             }
             $body = $choice['body'] ?? null;
 
-            return new FlagDetail(
-                $body ?? $defaultValue,
-                is_string($choice['reason'] ?? null) ? $choice['reason'] : self::UNANSWERED
-            );
+            // The reason is NOT read off the wire. `grep -rni reason` across the service's
+            // experience package returns nothing and `ExperienceApiChoose` carries only
+            // name/group/body, so a `reason` key can only arrive from a fixture. Reading one would
+            // make this branch look live while being unreachable in production - and an unreachable
+            // branch is an unkillable mutant, which costs MSI headroom on a gate set at 85.
+            return new FlagDetail($body ?? $defaultValue, self::UNANSWERED);
         }
 
         return new FlagDetail($defaultValue, self::UNANSWERED);
@@ -246,6 +248,17 @@ final class Intempt
 
     /**
      * Every key assigned to this person, in one call.
+     *
+     * **This is not a free read, and it is not a cheaper `variation()`.** Omitting `names` makes the
+     * service evaluate EVERY running Server experience, and every evaluation reports an exposure:
+     * `retrieveApiExperiences` -> `ChooserHelper.display` -> `publishEvent` -> Kafka. That is
+     * `EXP-SERVE-003` working as specified, not a defect, but the consequence here is specific: one
+     * call at request start enrols the caller in every running experiment, including keys this code
+     * never reads, inflating those denominators with people who were shown nothing.
+     *
+     * Use it to enumerate or to debug. For a request path that reads two keys, call `variation()`
+     * twice — that reports two exposures instead of all of them. There is no suppress flag on the
+     * endpoint today; see docs/CONVENTIONS.md.
      *
      * @return array<string, mixed>
      */
@@ -292,8 +305,14 @@ final class Intempt
     }
 
     /**
-     * @param array<string, mixed> $defaultValue
-     * @return array<string, mixed>
+     * A JSON object or a JSON array body, returned as-is.
+     *
+     * Keyed `array-key`, not `string`: a JSON *array* body decodes to a PHP list, `is_array()`
+     * accepts it and it is returned with integer keys. Typing it `array<string, mixed>` said
+     * otherwise.
+     *
+     * @param array<array-key, mixed> $defaultValue
+     * @return array<array-key, mixed>
      */
     public function jsonVariation(string $key, FlagContext $context, array $defaultValue): array
     {
@@ -311,6 +330,11 @@ final class Intempt
      */
     public function waitForInitialization(?int $timeoutMs = null): void
     {
+        // $timeoutMs is accepted and ignored on purpose - there is no local store to wait for, so
+        // there is nothing a timeout could bound. Stated here because PHPStan L5 does not report an
+        // unused parameter, leaving a reader nothing else to go on.
+        unset($timeoutMs);
+
         $this->assertOpen();
     }
 
@@ -337,6 +361,15 @@ final class Intempt
                     : null,
             ]),
             'names' => $names,
+            // Omitted when the caller supplies none, rather than sent as null: `ChooserHelper`
+            // rewrites a blank session to the literal "default", so every exposure would otherwise
+            // land in one shared session and `ONCE_PER_VISIT` would degrade to `ONCE`.
+            'sessionId' => $context->sessionId,
+            // NOT decoration. `ExperienceRequest` splices this straight into the serving SQL as a
+            // raw predicate: null becomes "0", which matches nothing, ever - every flag would return
+            // its default in production while this suite stayed green. ALL becomes "1". Hardcoding
+            // it also means device targeting is bypassed rather than honoured, which is correct for
+            // a server SDK that has no user agent to read.
             'device' => 'all',
         ]);
 
