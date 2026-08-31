@@ -27,6 +27,11 @@
  * An entry may be allowed — hashing has legitimate non-bucketing uses, idempotency keys and cache
  * keys among them — by listing it in the sidecar allowlist with a reason. An allowlist entry that
  * no longer matches anything is itself an error, so the file cannot silently rot.
+ *
+ * A RUN THAT READS NOTHING IS A FAILURE, not a pass. This guard used to walk a missing root, find
+ * zero breaches and print OK — so a `src/` rename, a wrong GUARD_ROOT or a typo in GUARD_SRC turned
+ * it green while it checked nothing, and the CI job reported success. Both shapes now exit 1, and
+ * the pass line carries the file count so "OK" can be distinguished from "OK, having read none".
  */
 
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
@@ -58,7 +63,6 @@ const PATTERNS = [
 ];
 
 function walk(dir, out = []) {
-  if (!existsSync(dir)) return out;
   for (const name of readdirSync(dir)) {
     if (SKIP_DIR.test(name)) continue;
     const p = join(dir, name);
@@ -71,9 +75,18 @@ function walk(dir, out = []) {
 const allow = existsSync(allowPath) ? JSON.parse(readFileSync(allowPath, 'utf8')) : {};
 const seen = new Set();
 const hits = [];
+const missing = [];
+let scanned = 0;
 
 for (const r of roots) {
-  for (const file of walk(join(root, r))) {
+  const dir = join(root, r);
+  // A root that is not there is an error, not an empty scan. Without this the guard walks nothing,
+  // finds nothing, and exits 0 — the loudest possible way to say "clean" about a tree it never
+  // opened. A rename of `src/`, a wrong `GUARD_ROOT` in a workflow, or a typo in `GUARD_SRC` all
+  // land here, and all of them used to pass.
+  if (!existsSync(dir)) { missing.push(r); continue; }
+  for (const file of walk(dir)) {
+    scanned++;
     const rel = relative(root, file);
     readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
       if (/^\s*(\/\/|#|\*|--)/.test(line)) return; // a comment explaining the rule is not a breach
@@ -89,6 +102,26 @@ for (const r of roots) {
 }
 
 const problems = [];
+
+// Reported BEFORE the allowlist checks and before the hits. With nothing scanned, every allowance
+// also "matches nothing", so the stale-entry message below would fire and blame the allowlist for
+// a failure that is really a missing tree.
+if (missing.length) {
+  problems.push(`source root(s) not found under ${root}: ${missing.join(', ')}`);
+}
+if (!scanned) {
+  problems.push(
+    `scanned 0 source files under ${roots.join(', ')} — the guard proves nothing about a tree it ` +
+      'never read'
+  );
+}
+
+if (problems.length) {
+  console.error('no-local-bucketing FAILED');
+  for (const p of problems) console.error(`  - ${p}`);
+  process.exit(1);
+}
+
 if (hits.length) {
   problems.push(
     `bucket derivation must be server-only (EXP-ASSIGN-001..005) — ${hits.length} occurrence(s):\n    ` +
@@ -112,6 +145,9 @@ if (problems.length) {
   for (const p of problems) console.error(`  - ${p}`);
   process.exit(1);
 }
+// The count is part of the pass line on purpose: "OK" alone reads the same whether the guard read
+// eight files or none, and a reader scanning a CI log has no other way to tell.
 console.log(
-  `no-local-bucketing OK — scanned ${roots.join(', ')}, ${Object.keys(allow).length} documented allowance(s)`
+  `no-local-bucketing OK — scanned ${scanned} file(s) under ${roots.join(', ')}, ` +
+    `${Object.keys(allow).length} documented allowance(s)`
 );
