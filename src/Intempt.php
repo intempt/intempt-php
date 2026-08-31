@@ -13,7 +13,10 @@ namespace Intempt;
 
 final class Intempt
 {
-    public const VERSION = '1.0.1';
+    /** A response the service did not answer is reported as such rather than guessed at. */
+    private const UNANSWERED = 'off';
+
+    public const VERSION = '1.1.0';
 
     /** Reserved event name the platform interprets as an identity write. */
     public const IDENTIFY_EVENT = 'Identify';
@@ -189,6 +192,233 @@ final class Intempt
             $this->config->projectPath('/feeds/' . rawurlencode($feedId) . '/data'),
             $body
         );
+    }
+
+    // -- flags -------------------------------------------------------------
+
+    /**
+     * The value assigned to this person for $key, or $defaultValue if the service did not answer.
+     *
+     * Ask for a KEY, never a mode. Whether the key names an experiment, a personalization or a
+     * flag is the platform's business: its serving query filters on channel and status and never
+     * on mode. The older surface put the mode in the method name, which forced a caller to know
+     * which it was before reading it and grew combinatorially with every new mode.
+     */
+    public function variation(string $key, FlagContext $context, mixed $defaultValue): mixed
+    {
+        return $this->variationDetailInternal($key, $context, $defaultValue)->value;
+    }
+
+    /**
+     * Internal. NOT public, deliberately.
+     *
+     * It returns a reason, and the platform does not send one: a held-back person's experience is
+     * absent from the evaluation response entirely rather than present with a cause. So every
+     * reason would read "off" -- including for someone who WAS targeted and did receive the
+     * variant. That is a wrong answer, not a missing one, and a method whose only job is
+     * explaining why must not guess.
+     *
+     * variation() uses it for the value, which is correct either way. It becomes public when the
+     * serving contract carries a reason.
+     */
+    private function variationDetailInternal(
+        string $key,
+        FlagContext $context,
+        mixed $defaultValue
+    ): FlagDetail {
+        $this->assertOpen();
+        Validate::flagKey($key, 'variation');
+        $this->assertAnswerable($context, 'variation');
+
+        foreach ($this->chooseOrEmpty($context, [$key]) as $choice) {
+            if (($choice['name'] ?? null) !== $key) {
+                continue;
+            }
+            $body = $choice['body'] ?? null;
+
+            // The reason is NOT read off the wire. `grep -rni reason` across the service's
+            // experience package returns nothing and `ExperienceApiChoose` carries only
+            // name/group/body, so a `reason` key can only arrive from a fixture. Reading one would
+            // make this branch look live while being unreachable in production - and an unreachable
+            // branch is an unkillable mutant, which costs MSI headroom on a gate set at 85.
+            return new FlagDetail($body ?? $defaultValue, self::UNANSWERED);
+        }
+
+        return new FlagDetail($defaultValue, self::UNANSWERED);
+    }
+
+    /**
+     * Every key assigned to this person, in one call.
+     *
+     * **This is not a free read, and it is not a cheaper `variation()`.** Omitting `names` makes the
+     * service evaluate EVERY running Server experience, and every evaluation reports an exposure:
+     * `retrieveApiExperiences` -> `ChooserHelper.display` -> `publishEvent` -> Kafka. That is
+     * `EXP-SERVE-003` working as specified, not a defect, but the consequence here is specific: one
+     * call at request start enrols the caller in every running experiment, including keys this code
+     * never reads, inflating those denominators with people who were shown nothing.
+     *
+     * Use it to enumerate or to debug. For a request path that reads two keys, call `variation()`
+     * twice — that reports two exposures instead of all of them. There is no suppress flag on the
+     * endpoint today; see docs/CONVENTIONS.md.
+     *
+     * @return array<string, mixed>
+     */
+    public function allFlags(FlagContext $context): array
+    {
+        $this->assertOpen();
+        $this->assertAnswerable($context, 'allFlags');
+        $out = [];
+        foreach ($this->chooseOrEmpty($context, null) as $choice) {
+            $name = $choice['name'] ?? null;
+            if (is_string($name) && $name !== '') {
+                $out[$name] = $choice['body'] ?? null;
+            }
+        }
+
+        return $out;
+    }
+
+    public function boolVariation(string $key, FlagContext $context, bool $defaultValue): bool
+    {
+        $value = $this->variation($key, $context, $defaultValue);
+
+        // A served value of the wrong type is a misconfiguration, not something to coerce:
+        // (bool) 'false' is true, and a silent coercion is indistinguishable from a real answer.
+        return is_bool($value) ? $value : $defaultValue;
+    }
+
+    public function stringVariation(string $key, FlagContext $context, string $defaultValue): string
+    {
+        $value = $this->variation($key, $context, $defaultValue);
+
+        return is_string($value) ? $value : $defaultValue;
+    }
+
+    public function numberVariation(
+        string $key,
+        FlagContext $context,
+        int|float $defaultValue
+    ): int|float {
+        $value = $this->variation($key, $context, $defaultValue);
+
+        // is_numeric() would accept the STRING '42', so the check is on type, not value.
+        // No bool guard is needed here: unlike Python, PHP's is_int() is false for true.
+        return is_int($value) || is_float($value) ? $value : $defaultValue;
+    }
+
+    /**
+     * A JSON object or a JSON array body, returned as-is.
+     *
+     * Keyed `array-key`, not `string`: a JSON *array* body decodes to a PHP list, `is_array()`
+     * accepts it and it is returned with integer keys. Typing it `array<string, mixed>` said
+     * otherwise.
+     *
+     * @param array<array-key, mixed> $defaultValue
+     * @return array<array-key, mixed>
+     */
+    public function jsonVariation(string $key, FlagContext $context, array $defaultValue): array
+    {
+        $value = $this->variation($key, $context, $defaultValue);
+
+        return is_array($value) ? $value : $defaultValue;
+    }
+
+    /**
+     * Returns immediately.
+     *
+     * Present so the cross-SDK surface is the same everywhere, and so a caller porting from an SDK
+     * that polls a local flag store does not have to remove the call. Evaluation here is remote:
+     * each variation() is a request, so there is no local state to wait for.
+     */
+    public function waitForInitialization(?int $timeoutMs = null): void
+    {
+        // $timeoutMs is accepted and ignored on purpose - there is no local store to wait for, so
+        // there is nothing a timeout could bound. Stated here because PHPStan L5 does not report an
+        // unused parameter, leaving a reader nothing else to go on.
+        unset($timeoutMs);
+
+        $this->assertOpen();
+    }
+
+    /**
+     * A transport failure returns no choices rather than throwing.
+     *
+     * This is the entire reason $defaultValue is required: a network failure, a 5xx or a timeout
+     * must resolve to the value the caller chose. A flag SDK that throws when the service is
+     * unreachable takes the application down with it, which is the opposite of what a kill switch
+     * is for. A validation mistake still throws, because that is a programming error the caller
+     * can fix rather than a runtime condition to absorb.
+     *
+     * @param list<string>|null $names
+     * @return list<array<string, mixed>>
+     */
+    /**
+     * A context the service cannot answer is a caller mistake, so it raises here.
+     *
+     * This is deliberately NOT absorbed the way a transport failure is. `chooseOrEmpty()` returns
+     * the caller's default on a 5xx or a timeout because a personalization outage must not take the
+     * request path down with it. An unanswerable identity is a different thing: it is a programming
+     * error, it never recovers, and absorbing it produces an integration that looks healthy while
+     * every flag reads its default forever. Every other identified call in this SDK validates its
+     * identity up front — `Validate::identifier()` — and this is the same rule for the flag path.
+     */
+    private function assertAnswerable(FlagContext $context, string $method): void
+    {
+        if (!$context->hasIdentity($this->config->sourceId)) {
+            throw new IntemptConfigException(sprintf(
+                '%s: context needs either userId, or profileId together with a sourceId '
+                    . 'configured on the client — the serving endpoint resolves an entity by '
+                    . 'userId, or by sourceId plus profileId, and rejects anything else',
+                $method
+            ));
+        }
+    }
+
+    private function chooseOrEmpty(FlagContext $context, ?array $names): array
+    {
+        $body = Validate::compact([
+            'identification' => Validate::compact([
+                'userId' => $context->userId,
+                'profileId' => $context->profileId,
+                'sourceId' => $this->config->sourceId !== null
+                    ? (string) $this->config->sourceId
+                    : null,
+            ]),
+            'names' => $names,
+            // Omitted when the caller supplies none, rather than sent as null: `ChooserHelper`
+            // rewrites a blank session to the literal "default", so every exposure would otherwise
+            // land in one shared session and `ONCE_PER_VISIT` would degrade to `ONCE`.
+            'sessionId' => $context->sessionId,
+            // NOT decoration. `ExperienceRequest` splices this straight into the serving SQL as a
+            // raw predicate: null becomes "0", which matches nothing, ever - every flag would return
+            // its default in production while this suite stayed green. ALL becomes "1". Hardcoding
+            // it also means device targeting is bypassed rather than honoured, which is correct for
+            // a server SDK that has no user agent to read.
+            'device' => 'all',
+        ]);
+
+        try {
+            $response = $this->transport->post(
+                $this->config->projectPath('/optimization/choose-api'),
+                $body
+            );
+        } catch (\Throwable $e) {
+            // config->logger is nullable; config->logger() is the accessor that falls back to a
+            // NullLogger. Reaching for the property directly made the error handler itself throw,
+            // turning a recoverable service failure into a fatal - the exact opposite of what this
+            // catch exists to do. Found by the sample gate, because the unit tests only ever
+            // exercised a 500 with a logger present.
+            $this->config->logger()->warning('[intempt] flag evaluation failed, using defaults');
+
+            return [];
+        }
+
+        if (!is_array($response)) {
+            return [];
+        }
+        $choices = $response['choices'] ?? null;
+
+        return is_array($choices) ? array_values($choices) : [];
     }
 
     // -- privacy ----------------------------------------------------------

@@ -36,6 +36,28 @@ final class Validate
     }
 
     /**
+     * A flag key the serving endpoint will accept.
+     *
+     * The backend declares `Set<@Pattern(regexp = "^[a-zA-Z0-9_-]*$") String> names`, so a key with
+     * a dot or a space is a 400 — which this SDK's flag path absorbs into a silent default, exactly
+     * the class of caller mistake this repo's own rule says must fail loudly at the call site
+     * instead. Blankness is already rejected by nonBlank(), so the pattern here is `+`, not `*`.
+     */
+    public static function flagKey(mixed $value, string $method): string
+    {
+        $key = self::nonBlank($value, $method, 'key');
+        if (preg_match('/^[a-zA-Z0-9_-]+$/', $key) !== 1) {
+            throw new IntemptConfigException(sprintf(
+                '%s: key must match ^[a-zA-Z0-9_-]+$ (letters, digits, underscore, hyphen); '
+                    . 'the service rejects anything else with a 400',
+                $method
+            ));
+        }
+
+        return $key;
+    }
+
+    /**
      * At least one of userId or accountId must be present and non-blank.
      *
      * Truthiness is not enough: a run of spaces is truthy and is not an

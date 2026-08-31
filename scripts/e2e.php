@@ -16,6 +16,8 @@
  * the repository root:
  *
  *     INTEMPT_E2E_API_KEY     a PUBLIC key for a throwaway staging project
+ *     INTEMPT_E2E_SERVER_API_KEY  a SERVER key, flags only            (optional)
+ *     INTEMPT_E2E_FLAG_KEY    a key that exists in the project        (optional)
  *     INTEMPT_E2E_ORG
  *     INTEMPT_E2E_PROJECT
  *     INTEMPT_E2E_SOURCE_ID
@@ -37,6 +39,7 @@
 declare(strict_types=1);
 
 use Intempt\BatchOptions;
+use Intempt\FlagContext;
 use Intempt\Intempt;
 use Intempt\IntemptApiException;
 
@@ -82,6 +85,13 @@ $stableUserId = $env('INTEMPT_E2E_USER_ID');
 $accountId = $env('INTEMPT_E2E_ACCOUNT_ID');
 $feedId = $env('INTEMPT_E2E_FEED_ID');
 $productId = $env('INTEMPT_E2E_PRODUCT_ID');
+// Deliberately NOT INTEMPT_E2E_API_KEY. That one is documented as a public key, and
+// EXP-SERVE-004 (Critical) requires a server credential on the evaluation endpoint: the response
+// describes how every experience in the project targets, which a public key must not see. Reusing
+// it here would prove the wrong thing, or 401. Which credential CI should carry is an open
+// decision, so these steps SKIP rather than guess, and e2e.yml is untouched.
+$serverApiKey = $env('INTEMPT_E2E_SERVER_API_KEY');
+$flagKey = $env('INTEMPT_E2E_FLAG_KEY');
 $host = $env('INTEMPT_E2E_HOST') ?? 'api.staging.intempt.com';
 $scheme = $env('INTEMPT_E2E_SCHEME') ?? 'https';
 $feedFields = array_values(array_filter(array_map(
@@ -112,6 +122,8 @@ foreach ([
     ['accountId (optional)', $accountId, 'group — created automatically if absent'],
     ['feed id', $feedId, 'recommend'],
     ['productId', $productId, 'ecommerce.*'],
+    ['server api key', $serverApiKey, 'variation, allFlags — a PUBLIC key is refused there'],
+    ['flag key', $flagKey, 'variation against a real key'],
 ] as [$name, $value, $usedBy]) {
     printf("  %s  %-22s %s\n", $value !== null ? 'have' : 'MISS', $name, $usedBy);
 }
@@ -271,6 +283,63 @@ if ($feedId !== null) {
     });
 } else {
     $skip('recommend', 'no INTEMPT_E2E_FEED_ID');
+}
+
+// --- flags ------------------------------------------------------------------
+
+// The unit suite asserts what goes over the wire. This asserts the service accepts it — that
+// `device: "all"` deserializes to ExperienceDevice.ALL rather than 400ing, that `identification`
+// carries the three field names the service actually declares, and that a server credential is
+// honoured on this endpoint. None of that is provable from loopback.
+if ($serverApiKey !== null) {
+    $flagClient = new Intempt([
+        'org' => $org,
+        'project' => $project,
+        'apiKey' => $serverApiKey,
+        'sourceId' => $sourceId,
+        'host' => $host,
+        'scheme' => $scheme,
+    ]);
+    $flagContext = new FlagContext(userId: $userId, sessionId: 'sdk-e2e-' . bin2hex(random_bytes(4)));
+
+    // An unknown key is the step that can fail loudly. variation() absorbs a transport failure into
+    // the default by design, so a PASS here proves the request was well formed OR that it failed and
+    // was swallowed — which is why the raw call below runs first and is allowed to throw.
+    $step('choose-api accepts the SDK request shape', static function () use ($flagClient, $flagContext) {
+        $names = $flagClient->allFlags($flagContext);
+
+        // NOTE: allFlags reports an exposure against every running Server experience in this
+        // project (see docs/CONVENTIONS.md). Acceptable against a throwaway staging project and
+        // nowhere else; do not copy this call into a request path.
+        return sprintf('%d key(s) served', count($names));
+    });
+
+    if ($flagKey !== null) {
+        $step('variation (real key resolves)', static function () use ($flagClient, $flagContext, $flagKey) {
+            $value = $flagClient->variation($flagKey, $flagContext, '__default__');
+
+            return $value === '__default__'
+                ? 'served the DEFAULT — key off, not targeted, or unreachable'
+                : 'served ' . var_export($value, true);
+        });
+    } else {
+        $skip('variation (real key)', 'no INTEMPT_E2E_FLAG_KEY');
+    }
+
+    // The negative case: a key that cannot exist must come back as the caller's default rather than
+    // throwing. This is the whole reason defaultValue is required.
+    $step('variation (unknown key returns the default)', static function () use ($flagClient, $flagContext) {
+        $value = $flagClient->variation('sdk_e2e_no_such_key', $flagContext, 'fallback');
+        if ($value !== 'fallback') {
+            throw new \RuntimeException('an unknown key returned ' . var_export($value, true));
+        }
+
+        return 'fallback, as it should be';
+    });
+
+    $flagClient->close();
+} else {
+    $skip('flags (choose-api)', 'no INTEMPT_E2E_SERVER_API_KEY');
 }
 
 // --- buffered mode ----------------------------------------------------------

@@ -9,6 +9,49 @@ permissions:
   contents: read
 
 jobs:
+  # EXP-ASSIGN-001..005: the platform decides which variant a person gets. An SDK that
+  # derives its own bucket can disagree with the server, and the same person is then
+  # served differently depending on the channel they arrive through — silently, because
+  # each side is internally consistent. Runs without install so it cannot be skipped.
+  # Cited by requirement id so the reference resolves: the rule's old numbering did not
+  # exist in brain, and a CI job citing a dead reference cannot be checked by a reader.
+  bucketing:
+    name: Server-only bucketing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: No SDK derives buckets locally (EXP-ASSIGN-001..005)
+        run: node scripts/check-no-local-bucketing.mjs
+        env:
+          GUARD_SRC: src
+
+      # The guard's own vacuity test, and it earns its place: before this, the guard walked a
+      # missing root, read zero files, found zero breaches and printed OK. A `src/` rename or a
+      # typo in GUARD_SRC above would have turned this whole job green while checking nothing.
+      # It lives here rather than in the PHP suite because that suite runs in php-only containers
+      # with no node, and a guarantee is worth having where it can actually run.
+      - name: The guard fails when it scans nothing
+        run: |
+          set -e
+          # Shape 1: the script is there, the tree it is meant to read is not. GUARD_SRC is
+          # deliberately unset so this exercises the default root.
+          empty="$(mktemp -d)"
+          mkdir -p "$empty/scripts"
+          cp scripts/check-no-local-bucketing.mjs scripts/no-local-bucketing-allow.json "$empty/scripts/"
+          if (cd "$empty" && env -u GUARD_SRC -u GUARD_ROOT node scripts/check-no-local-bucketing.mjs); then
+            echo "::error::the guard passed on a tree with no src/ — it proves nothing"
+            exit 1
+          fi
+          # Shape 2: a real tree, but pointed at a root that does not exist.
+          if GUARD_SRC=definitely-not-a-directory node scripts/check-no-local-bucketing.mjs; then
+            echo "::error::the guard passed with a source root that does not exist"
+            exit 1
+          fi
+          echo "the guard refuses a vacuous run, both shapes"
+
   test:
     runs-on: ubuntu-latest
     strategy:
