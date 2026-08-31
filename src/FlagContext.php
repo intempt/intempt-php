@@ -28,6 +28,14 @@ namespace Intempt;
  * `sessionId` is optional and scopes exposure counting. Omitting it is not free: the service files
  * every exposure under a session literally named `default`, and a `ONCE_PER_VISIT` experience then
  * serves an entity once and never again, because the stored session always equals the incoming one.
+ *
+ * **An identity is required, and it is checked.** Removing `accountId` closed the one DOCUMENTED
+ * way to build a context the service cannot answer; it did not close the others. An empty context,
+ * a blank `userId`, or a `profileId` on a client with no configured `sourceId` all still reach
+ * `buildAudienceRequest`, which throws — and this SDK absorbs a service failure by design, so the
+ * caller would serve defaults forever and see a working integration. `hasIdentity()` states the
+ * service's own condition and the flag methods assert it at the call site, which is the same rule
+ * `Validate::flagKey()` already applies to a key the service would reject.
  */
 final class FlagContext
 {
@@ -36,5 +44,27 @@ final class FlagContext
         public readonly ?string $profileId = null,
         public readonly ?string $sessionId = null,
     ) {
+    }
+
+    /**
+     * Whether the service can answer this context at all.
+     *
+     * Mirrors `ExperienceChooserService.buildAudienceRequest`: the PROFILE branch needs a source id
+     * AND a non-blank profile id, the USER branch needs a user id, and there is no third branch —
+     * it throws. So this is not a style check. A context satisfying neither makes the service throw
+     * before it evaluates anything, `chooseOrEmpty()` absorbs that by design, and the caller gets
+     * their default for every key, forever, behind one WARN line.
+     *
+     * Blankness is checked, not truthiness: a run of spaces is truthy and is not an identifier, and
+     * the service's own test is `isBlank()`.
+     */
+    public function hasIdentity(int|string|null $sourceId): bool
+    {
+        if (Validate::present($this->userId)) {
+            return true;
+        }
+
+        return Validate::present($this->profileId)
+            && Validate::present($sourceId === null ? null : (string) $sourceId);
     }
 }

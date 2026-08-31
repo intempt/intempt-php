@@ -146,6 +146,88 @@ final class FlagsTest extends TestCase
         new FlagContext(accountId: 'a-1');
     }
 
+    // -- the identity the service can actually resolve ----------------------
+    //
+    // Removing `accountId` closed the one DOCUMENTED way to build a context the service cannot
+    // answer. It did not close the others, and the others were reachable through the ordinary
+    // constructor: `new FlagContext()`, a blank userId, or a profileId on a client configured
+    // without a sourceId. All three reach buildAudienceRequest, which throws; chooseOrEmpty()
+    // absorbs that; and the caller reads their default for every key forever behind one WARN line,
+    // with an integration that looks healthy. Measured against a live host before this guard
+    // existed: all three returned the default and raised nothing.
+    //
+    // Both directions are asserted. A guard that also rejects a legal context would be invisible
+    // from the refusal tests alone.
+
+    public function testRefusesAContextThatCarriesNoIdentifierAtAll(): void
+    {
+        $this->expectException(IntemptConfigException::class);
+        $this->expectExceptionMessage('userId');
+        $this->client()->variation('checkout_v2', new FlagContext(), 'x');
+    }
+
+    public function testRefusesABlankUserId(): void
+    {
+        // Truthiness is not identity: a run of spaces is truthy, and the service tests isBlank().
+        $this->expectException(IntemptConfigException::class);
+        $this->client()->variation('checkout_v2', new FlagContext(userId: '   '), 'x');
+    }
+
+    public function testRefusesAProfileOnlyContextWhenNoSourceIdIsConfigured(): void
+    {
+        // The PROFILE branch needs BOTH. Without a configured sourceId this context satisfies
+        // neither branch, so the service throws and every read would silently default.
+        $this->expectException(IntemptConfigException::class);
+        $this->expectExceptionMessage('sourceId');
+        $this->client(['sourceId' => null])
+            ->variation('checkout_v2', new FlagContext(profileId: 'p-1'), 'x');
+    }
+
+    public function testAcceptsAProfileOnlyContextWhenASourceIdIsConfigured(): void
+    {
+        // The reverse check for the branch above: the same context is legal once the client can
+        // supply the other half of the pair.
+        $this->expectChoices([['name' => 'checkout_v2', 'body' => 'served']]);
+
+        self::assertSame(
+            'served',
+            $this->client()->variation('checkout_v2', new FlagContext(profileId: 'p-1'), 'x')
+        );
+    }
+
+    public function testAcceptsAUserIdWithNoSourceIdConfigured(): void
+    {
+        // The USER branch needs nothing else. A guard demanding a sourceId unconditionally would
+        // break every caller who identifies by user, and the refusal tests could not see it.
+        $this->expectChoices([['name' => 'checkout_v2', 'body' => 'served']]);
+
+        self::assertSame(
+            'served',
+            $this->client(['sourceId' => null])
+                ->variation('checkout_v2', new FlagContext(userId: 'u-1'), 'x')
+        );
+    }
+
+    public function testAllFlagsRefusesAnUnanswerableContextToo(): void
+    {
+        // The second entry point into chooseOrEmpty(). Guarding only variation() would leave the
+        // enumeration path defaulting silently.
+        $this->expectException(IntemptConfigException::class);
+        $this->client()->allFlags(new FlagContext());
+    }
+
+    public function testAnUnanswerableContextNeverReachesTheWire(): void
+    {
+        // It has to fail at the call site, not after a round trip: the whole failure mode is that
+        // the service's own rejection is indistinguishable from "no experience matched".
+        try {
+            $this->client()->variation('checkout_v2', new FlagContext(), 'x');
+            self::fail('an unanswerable context must raise');
+        } catch (IntemptConfigException) {
+            self::assertCount(0, self::server()->requests());
+        }
+    }
+
     // -- the response ------------------------------------------------------
 
     public function testReturnsTheServedValue(): void

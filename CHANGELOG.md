@@ -28,6 +28,21 @@ an outage of the thing being personalized.
   so an account-only caller would have had every flag return its default
   forever, with nothing raised.
 
+### Validated at the call site, not absorbed
+
+A flag read returns your default when Intempt cannot answer. It does **not**
+do that for a mistake you can fix, because absorbing one produces an
+integration that looks healthy while every key reads its default forever:
+
+- **A context the service cannot resolve raises.** It needs either a `userId`,
+  or a `profileId` together with a `sourceId` configured on the client — the
+  serving endpoint resolves an entity by one or the other and rejects anything
+  else. An empty context, a blank `userId`, or a `profileId` with no configured
+  `sourceId` all used to reach the service, be rejected there, and come back as
+  a silent default.
+- **A key raises unless it matches `^[a-zA-Z0-9_-]+$`.** The service applies the
+  same expression and answers a violation with a 400.
+
 ### Known limitations, recorded rather than hidden
 
 - **`allFlags()` records an exposure on every running Server experiment**,

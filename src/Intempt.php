@@ -228,6 +228,7 @@ final class Intempt
     ): FlagDetail {
         $this->assertOpen();
         Validate::flagKey($key, 'variation');
+        $this->assertAnswerable($context, 'variation');
 
         foreach ($this->chooseOrEmpty($context, [$key]) as $choice) {
             if (($choice['name'] ?? null) !== $key) {
@@ -265,6 +266,7 @@ final class Intempt
     public function allFlags(FlagContext $context): array
     {
         $this->assertOpen();
+        $this->assertAnswerable($context, 'allFlags');
         $out = [];
         foreach ($this->chooseOrEmpty($context, null) as $choice) {
             $name = $choice['name'] ?? null;
@@ -350,6 +352,28 @@ final class Intempt
      * @param list<string>|null $names
      * @return list<array<string, mixed>>
      */
+    /**
+     * A context the service cannot answer is a caller mistake, so it raises here.
+     *
+     * This is deliberately NOT absorbed the way a transport failure is. `chooseOrEmpty()` returns
+     * the caller's default on a 5xx or a timeout because a personalization outage must not take the
+     * request path down with it. An unanswerable identity is a different thing: it is a programming
+     * error, it never recovers, and absorbing it produces an integration that looks healthy while
+     * every flag reads its default forever. Every other identified call in this SDK validates its
+     * identity up front — `Validate::identifier()` — and this is the same rule for the flag path.
+     */
+    private function assertAnswerable(FlagContext $context, string $method): void
+    {
+        if (!$context->hasIdentity($this->config->sourceId)) {
+            throw new IntemptConfigException(sprintf(
+                '%s: context needs either userId, or profileId together with a sourceId '
+                    . 'configured on the client — the serving endpoint resolves an entity by '
+                    . 'userId, or by sourceId plus profileId, and rejects anything else',
+                $method
+            ));
+        }
+    }
+
     private function chooseOrEmpty(FlagContext $context, ?array $names): array
     {
         $body = Validate::compact([
