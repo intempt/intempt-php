@@ -1,6 +1,62 @@
 # Changelog
 
-## 1.0.1 — unreleased
+## 1.1.0 — 2026-09-01
+
+### Added — reading flags
+
+`variation`, `boolVariation`, `stringVariation`, `numberVariation`,
+`jsonVariation`, `allFlags` and `waitForInitialization`, plus the `FlagContext`
+value object. Evaluation is server-side: the SDK sends an identity and a set of
+keys to `/optimization/choose-api` and returns what comes back. It derives
+nothing locally, which is enforced by a CI guard rather than by convention —
+an SDK cannot re-derive a draw it did not witness, so any client-side bucket
+arithmetic would disagree with the platform for some people, silently.
+
+Every read returns the caller's default when the service cannot answer, in the
+caller's own type. A failure is one WARN line, never an exception, because a
+flag read sits on the request path and a personalization outage must not become
+an outage of the thing being personalized.
+
+### Deliberately absent
+
+- **`variationDetail()` and a public `FlagDetail`.** The serving response
+  carries no reason, so the only honest reason this SDK could return is
+  "unknown" for every call. Withheld until the platform sends one, rather than
+  shipped returning a constant a caller would reasonably act on.
+- **`FlagContext::accountId`.** Accepted in an earlier draft and removed before
+  release: the service identifies by `sourceId` / `profileId` / `userId` only,
+  so an account-only caller would have had every flag return its default
+  forever, with nothing raised.
+
+### Known limitations, recorded rather than hidden
+
+- **`allFlags()` records an exposure on every running Server experiment**,
+  including keys the caller never reads. The endpoint has no suppress field, so
+  no SDK can avoid it. Prefer `variation()` per key where denominators matter.
+- **`userId` is ignored when `profileId` is present.** The service tests
+  `sourceId` + `profileId` first. The precedence is the caller's to choose;
+  it is documented so it can be chosen deliberately.
+- **A key must match `^[a-zA-Z0-9_-]+$`.** Checked locally now, so a key the
+  service would reject fails loudly at the call site instead of resolving to a
+  default.
+
+### Corrects 1.0.0
+
+1.0.0 listed **Experiments and personalizations** under *Deliberately absent*,
+reasoning that "they resolve a web experience against a page, and a server has
+no page". That is true of the `web` channel and false of `api`, which is a
+first-class server-side experience type — which is why this release exists.
+The 1.0.0 text is left as written rather than edited, since it is what shipped.
+
+### Fixed
+
+- `scripts/check-no-local-bucketing.mjs` reported success on a tree it had
+  never read: a missing source root produced zero files, zero breaches and
+  exit 0. A missing root and a zero-file scan are both errors now, reported
+  before the allowlist checks, and the pass line states the file count. The CI
+  job asserts both vacuous shapes fail.
+
+## 1.0.1 — 2026-08-18
 
 - Fix: `tests/FakeServer.php` and `tests/ExampleAppTest.php` referenced the
   pcntl-only `SIGTERM` constant without pcntl being an installed extension,
@@ -13,7 +69,7 @@
   `vendor/autoload.php` and fatals. Both now try the repo-relative and the
   installed-package-relative path.
 
-## 1.0.0 — unreleased
+## 1.0.0 — 2026-08-16
 
 First release. Server-side SDK, Apache 2.0, derived from mixpanel-php; see
 [NOTICE](./NOTICE) for what was taken and what changed.

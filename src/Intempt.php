@@ -16,7 +16,7 @@ final class Intempt
     /** A response the service did not answer is reported as such rather than guessed at. */
     private const UNANSWERED = 'off';
 
-    public const VERSION = '1.0.1';
+    public const VERSION = '1.1.0';
 
     /** Reserved event name the platform interprets as an identity write. */
     public const IDENTIFY_EVENT = 'Identify';
