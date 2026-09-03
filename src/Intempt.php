@@ -16,7 +16,7 @@ final class Intempt
     /** A response the service did not answer is reported as such rather than guessed at. */
     private const UNANSWERED = 'off';
 
-    public const VERSION = '1.1.0';
+    public const VERSION = '2.0.0';
 
     /** Reserved event name the platform interprets as an identity write. */
     public const IDENTIFY_EVENT = 'Identify';
@@ -125,20 +125,6 @@ final class Intempt
         unset($options['event'], $options['attributes']);
         $options['accountAttributes'] = $attributes;
         $this->submit([$this->buildEvent($this->reservedName($event, 'group'), $options)]);
-    }
-
-    /** @param array<string, mixed> $options */
-    public function alias(array $options): void
-    {
-        Validate::nonBlank($options['userId'] ?? null, 'alias', 'userId');
-        Validate::nonBlank($options['previousUserId'] ?? null, 'alias', 'previousUserId');
-        $previous = $options['previousUserId'];
-        $event = $options['event'] ?? null;
-        unset($options['event'], $options['previousUserId']);
-
-        $item = $this->buildEvent($this->reservedName($event, 'alias'), $options);
-        $item['payload'][0]['anotherUserId'] = $previous;
-        $this->submit([$item]);
     }
 
     // -- decisions out ----------------------------------------------------
@@ -507,7 +493,7 @@ final class Intempt
         }
         if (strtolower(trim($event)) === strtolower(self::IDENTIFY_EVENT)) {
             throw new IntemptConfigException(sprintf(
-                '%s: "%s" is reserved; use identify(), group() or alias()',
+                '%s: "%s" is reserved; use identify() or group()',
                 $method,
                 $event
             ));

@@ -13,7 +13,6 @@ namespace Intempt\Tests;
 
 use Intempt\IntemptApiException;
 use Intempt\IntemptConfigException;
-use PHPUnit\Framework\Attributes\DataProvider;
 
 final class ClientTest extends TestCase
 {
@@ -162,32 +161,6 @@ final class ClientTest extends TestCase
         $payload = self::server()->requests()[0]['body']['track'][0]['payload'][0];
         self::assertSame('acme', $payload['accountId']);
         self::assertSame(['tier' => 'ent'], $payload['accountAttributes']);
-    }
-
-    public function testAliasCarriesBothIdentities(): void
-    {
-        $this->client()->alias(['userId' => 'new', 'previousUserId' => 'old']);
-        $payload = self::server()->requests()[0]['body']['track'][0]['payload'][0];
-        self::assertSame('new', $payload['userId']);
-        self::assertSame('old', $payload['anotherUserId']);
-    }
-
-    /** @return list<array{array<string, string>, string}> */
-    public static function blankAliasFields(): array
-    {
-        return [
-            [['userId' => ' ', 'previousUserId' => 'old'], 'userId'],
-            [['userId' => 'new', 'previousUserId' => ' '], 'previousUserId'],
-        ];
-    }
-
-    /** @param array<string, string> $options */
-    #[DataProvider('blankAliasFields')]
-    public function testAliasNamesTheBlankField(array $options, string $field): void
-    {
-        $this->expectException(IntemptConfigException::class);
-        $this->expectExceptionMessage($field . ' must be a non-empty string');
-        $this->client()->alias($options);
     }
 
     // -- ecommerce --------------------------------------------------------

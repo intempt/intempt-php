@@ -118,7 +118,7 @@ if ($loadedCount > 0) {
 printf("  profile: %s%s\n\n", $userId, $stableUserId !== null ? ' (stable)' : ' (ephemeral)');
 echo "  project inputs\n  " . str_repeat('-', 76) . "\n";
 foreach ([
-    ['stable userId', $stableUserId, 'identify, track, group, alias, consent'],
+    ['stable userId', $stableUserId, 'identify, track, group, consent'],
     ['accountId (optional)', $accountId, 'group — created automatically if absent'],
     ['feed id', $feedId, 'recommend'],
     ['productId', $productId, 'ecommerce.*'],
@@ -204,13 +204,6 @@ $step('group (creates the account if absent)', static function () use ($intempt,
         'userId' => $userId,
         'accountId' => $accountId ?? 'sdk-e2e-account',
         'attributes' => ['tier' => 'e2e'],
-    ]);
-});
-
-$step('alias', static function () use ($intempt, $userId) {
-    $intempt->alias([
-        'userId' => $userId,
-        'previousUserId' => 'sdk-e2e-prev-' . bin2hex(random_bytes(4)),
     ]);
 });
 
