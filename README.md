@@ -49,7 +49,6 @@ By default each call sends one request and returns when the server responds.
 | `trackBatch($events)` | `void` | `POST …/track`, chunked |
 | `identify($options)` | `void` | `POST …/track` (reserved `Identify`) |
 | `group($options)` | `void` | `POST …/track` (reserved `Identify`) |
-| `alias($options)` | `void` | `POST …/track` (reserved `Identify`) |
 | `consent->grant($options)` | `void` | `POST …/consents/data` |
 | `consent->revoke($options)` | `void` | `POST …/consents/data` |
 | `ecommerce->productViewed($options)` | `void` | `POST …/track` |

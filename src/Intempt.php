@@ -127,20 +127,6 @@ final class Intempt
         $this->submit([$this->buildEvent($this->reservedName($event, 'group'), $options)]);
     }
 
-    /** @param array<string, mixed> $options */
-    public function alias(array $options): void
-    {
-        Validate::nonBlank($options['userId'] ?? null, 'alias', 'userId');
-        Validate::nonBlank($options['previousUserId'] ?? null, 'alias', 'previousUserId');
-        $previous = $options['previousUserId'];
-        $event = $options['event'] ?? null;
-        unset($options['event'], $options['previousUserId']);
-
-        $item = $this->buildEvent($this->reservedName($event, 'alias'), $options);
-        $item['payload'][0]['anotherUserId'] = $previous;
-        $this->submit([$item]);
-    }
-
     // -- decisions out ----------------------------------------------------
 
     /**
@@ -507,7 +493,7 @@ final class Intempt
         }
         if (strtolower(trim($event)) === strtolower(self::IDENTIFY_EVENT)) {
             throw new IntemptConfigException(sprintf(
-                '%s: "%s" is reserved; use identify(), group() or alias()',
+                '%s: "%s" is reserved; use identify() or group()',
                 $method,
                 $event
             ));
