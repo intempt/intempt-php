@@ -25,7 +25,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: intempt-ubuntu-github-runner
     permissions:
       contents: write # create the GitHub Release
     steps:
