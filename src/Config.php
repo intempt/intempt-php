@@ -87,6 +87,11 @@ final class Config
                     'Intempt: "sourceId" must not be empty when provided'
                 );
             }
+            if (!self::isPositiveLong($sourceId)) {
+                throw new IntemptConfigException(
+                    'Intempt: "sourceId" must be a positive 64-bit integer, as a string of digits'
+                );
+            }
         }
 
         // Null means "not supplied, use the default". An explicit empty string
@@ -202,6 +207,19 @@ final class Config
             maxRequestEvents: $patch['maxRequestEvents'] ?? $this->maxRequestEvents,
             logger: $patch['logger'] ?? $this->logger,
         );
+    }
+
+    /**
+     * The backend parses sourceId as a Java long and requires it > 0 (INT-7455).
+     *
+     * `\z`, not `$`: `$` also matches before a trailing newline. strcmp, not `<=`: two
+     * numeric strings compare as numbers, and past PHP_INT_MAX that is a lossy float compare.
+     * Equal-length digit strings order lexicographically exactly as numerically.
+     */
+    private static function isPositiveLong(string $value): bool
+    {
+        return preg_match('/^[1-9][0-9]{0,18}\z/', $value) === 1
+            && (strlen($value) < 19 || strcmp($value, '9223372036854775807') <= 0);
     }
 
     /**
