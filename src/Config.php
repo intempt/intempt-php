@@ -47,6 +47,8 @@ final class Config
         public readonly ?Logger $logger = null,
         /** @var (\Closure(DeliveryFailure): void)|null */
         public readonly ?\Closure $onDeliveryFailure = null,
+        /** @var (\Closure(FlagError): void)|null */
+        public readonly ?\Closure $onFlagError = null,
     ) {
     }
 
@@ -157,6 +159,7 @@ final class Config
             maxRequestEvents: $maxRequestEvents,
             logger: $logger,
             onDeliveryFailure: self::hook($options, 'onDeliveryFailure'),
+            onFlagError: self::hook($options, 'onFlagError'),
         );
     }
 
@@ -228,6 +231,9 @@ final class Config
             maxRequestEvents: $patch['maxRequestEvents'] ?? $this->maxRequestEvents,
             logger: $patch['logger'] ?? $this->logger,
             onDeliveryFailure: $this->onDeliveryFailure,
+            onFlagError: array_key_exists('onFlagError', $patch)
+                ? self::hook($patch, 'onFlagError')
+                : $this->onFlagError,
         );
     }
 

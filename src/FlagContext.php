@@ -52,7 +52,7 @@ final class FlagContext
      * Mirrors `ExperienceChooserService.buildAudienceRequest`: the PROFILE branch needs a source id
      * AND a non-blank profile id, the USER branch needs a user id, and there is no third branch —
      * it throws. So this is not a style check. A context satisfying neither makes the service throw
-     * before it evaluates anything, `chooseOrEmpty()` absorbs that by design, and the caller gets
+     * before it evaluates anything, `choose()` absorbs that by design, and the caller gets
      * their default for every key, forever, behind one WARN line.
      *
      * Blankness is checked, not truthiness: a run of spaces is truthy and is not an identifier, and

@@ -15,6 +15,7 @@ final class Intempt
 {
     /** A response the service did not answer is reported as such rather than guessed at. */
     private const UNANSWERED = 'off';
+    private const ERRORED = 'error';
 
     public const VERSION = '2.1.0';
 
@@ -40,6 +41,7 @@ final class Intempt
     private readonly Delivery $delivery;
     private bool $optedIn = true;
     private bool $closed = false;
+    private bool $authFailureLogged = false;
 
     /** @param array<string, mixed> $options */
     public function __construct(array $options)
@@ -210,42 +212,35 @@ final class Intempt
      */
     public function variation(string $key, FlagContext $context, mixed $defaultValue): mixed
     {
-        return $this->variationDetailInternal($key, $context, $defaultValue)->value;
+        return $this->variationDetail($key, $context, $defaultValue)->value;
     }
 
     /**
-     * Internal. NOT public, deliberately.
+     * The value, plus `reason: 'error'` and the FlagError when the call failed (INT-7454).
      *
-     * It returns a reason, and the platform does not send one: a held-back person's experience is
-     * absent from the evaluation response entirely rather than present with a cause. So every
-     * reason would read "off" -- including for someone who WAS targeted and did receive the
-     * variant. That is a wrong answer, not a missing one, and a method whose only job is
-     * explaining why must not guess.
-     *
-     * variation() uses it for the value, which is correct either way. It becomes public when the
-     * serving contract carries a reason.
+     * The service sends no reason (INT-7457): a held-back person's experience is absent from the
+     * response rather than present with a cause, so a served value and an unassigned key both read
+     * `off`. That is stated, not guessed. What this does distinguish is a failure, which used to be
+     * indistinguishable from "off".
      */
-    private function variationDetailInternal(
-        string $key,
-        FlagContext $context,
-        mixed $defaultValue
-    ): FlagDetail {
+    public function variationDetail(string $key, FlagContext $context, mixed $defaultValue): FlagDetail
+    {
         $this->assertOpen();
         Validate::flagKey($key, 'variation');
         $this->assertAnswerable($context, 'variation');
 
-        foreach ($this->chooseOrEmpty($context, [$key]) as $choice) {
+        [$choices, $error] = $this->choose($context, [$key], $key);
+        if ($error !== null) {
+            return new FlagDetail($defaultValue, self::ERRORED, $error);
+        }
+        foreach ($choices as $choice) {
             if (($choice['name'] ?? null) !== $key) {
                 continue;
             }
-            $body = $choice['body'] ?? null;
 
-            // The reason is NOT read off the wire. `grep -rni reason` across the service's
-            // experience package returns nothing and `ExperienceApiChoose` carries only
-            // name/group/body, so a `reason` key can only arrive from a fixture. Reading one would
-            // make this branch look live while being unreachable in production - and an unreachable
-            // branch is an unkillable mutant, which costs MSI headroom on a gate set at 85.
-            return new FlagDetail($body ?? $defaultValue, self::UNANSWERED);
+            // The reason is NOT read off the wire: `ExperienceApiChoose` carries only
+            // name/group/body, so a `reason` key can only arrive from a fixture (INT-7457).
+            return new FlagDetail($choice['body'] ?? $defaultValue, self::UNANSWERED);
         }
 
         return new FlagDetail($defaultValue, self::UNANSWERED);
@@ -272,7 +267,7 @@ final class Intempt
         $this->assertOpen();
         $this->assertAnswerable($context, 'allFlags');
         $out = [];
-        foreach ($this->chooseOrEmpty($context, null) as $choice) {
+        foreach ($this->choose($context, null, null)[0] as $choice) {
             $name = $choice['name'] ?? null;
             if (is_string($name) && $name !== '') {
                 $out[$name] = $choice['body'] ?? null;
@@ -345,21 +340,9 @@ final class Intempt
     }
 
     /**
-     * A transport failure returns no choices rather than throwing.
-     *
-     * This is the entire reason $defaultValue is required: a network failure, a 5xx or a timeout
-     * must resolve to the value the caller chose. A flag SDK that throws when the service is
-     * unreachable takes the application down with it, which is the opposite of what a kill switch
-     * is for. A validation mistake still throws, because that is a programming error the caller
-     * can fix rather than a runtime condition to absorb.
-     *
-     * @param list<string>|null $names
-     * @return list<array<string, mixed>>
-     */
-    /**
      * A context the service cannot answer is a caller mistake, so it raises here.
      *
-     * This is deliberately NOT absorbed the way a transport failure is. `chooseOrEmpty()` returns
+     * This is deliberately NOT absorbed the way a transport failure is. `choose()` returns
      * the caller's default on a 5xx or a timeout because a personalization outage must not take the
      * request path down with it. An unanswerable identity is a different thing: it is a programming
      * error, it never recovers, and absorbing it produces an integration that looks healthy while
@@ -378,7 +361,21 @@ final class Intempt
         }
     }
 
-    private function chooseOrEmpty(FlagContext $context, ?array $names): array
+    /**
+     * A transport failure returns no choices rather than throwing.
+     *
+     * This is the entire reason $defaultValue is required: a network failure, a 5xx or a timeout
+     * must resolve to the value the caller chose. A flag SDK that throws when the service is
+     * unreachable takes the application down with it, which is the opposite of what a kill switch
+     * is for. A validation mistake still throws, because that is a programming error the caller
+     * can fix rather than a runtime condition to absorb.
+     *
+     * The failure is still reported: onFlagError, and a FlagError for variationDetail() (INT-7454).
+     *
+     * @param list<string>|null $names
+     * @return array{0: list<array<string, mixed>>, 1: FlagError|null}
+     */
+    private function choose(FlagContext $context, ?array $names, ?string $key): array
     {
         $body = Validate::compact([
             'identification' => Validate::compact([
@@ -407,22 +404,75 @@ final class Intempt
                 $body
             );
         } catch (\Throwable $e) {
-            // config->logger is nullable; config->logger() is the accessor that falls back to a
-            // NullLogger. Reaching for the property directly made the error handler itself throw,
-            // turning a recoverable service failure into a fatal - the exact opposite of what this
-            // catch exists to do. Found by the sample gate, because the unit tests only ever
-            // exercised a 500 with a logger present.
-            $this->config->logger()->warning('[intempt] flag evaluation failed, using defaults');
-
-            return [];
+            return [[], $this->flagFailed(self::classifyFlagError($key, $e))];
         }
 
         if (!is_array($response)) {
-            return [];
+            return [[], $this->flagFailed(new FlagError($key, 'parse'))];
         }
         $choices = $response['choices'] ?? null;
 
-        return is_array($choices) ? array_values($choices) : [];
+        return [is_array($choices) ? array_values($choices) : [], null];
+    }
+
+    private static function classifyFlagError(?string $key, \Throwable $error): FlagError
+    {
+        if (!$error instanceof IntemptApiException) {
+            return new FlagError($key, 'network');
+        }
+        $status = $error->status;
+        if ($status === null) {
+            return new FlagError($key, $error->timedOut ? 'timeout' : 'network');
+        }
+        $kind = match (true) {
+            $status === 401 || $status === 403 => 'auth',
+            $status === 408 => 'timeout',
+            $status === 429 || $status >= 500 => 'server',
+            default => 'bad_request',
+        };
+
+        return new FlagError($key, $kind, $status);
+    }
+
+    private function flagFailed(FlagError $error): FlagError
+    {
+        // config->logger is nullable; config->logger() is the accessor that falls back to a
+        // NullLogger. Reaching for the property directly made the error handler itself throw.
+        $logger = $this->config->logger();
+        if ($error->kind === 'auth') {
+            $message = sprintf(
+                '[intempt] flag service rejected the credentials (%d) for %s, sourceId %s; '
+                    . 'every flag returns its default until the API key is fixed',
+                (int) $error->status,
+                (string) $this->config->credentials,
+                $this->config->sourceId ?? 'none'
+            );
+            // Once per client: a bad key fails every call, and an error line per call buries the logs.
+            if ($this->authFailureLogged) {
+                $logger->debug($message);
+            } else {
+                $this->authFailureLogged = true;
+                $logger->error($message);
+            }
+        } else {
+            $logger->warning('[intempt] flag evaluation failed, using defaults', [
+                'kind' => $error->kind,
+                'status' => $error->status,
+            ]);
+        }
+
+        $hook = $this->config->onFlagError;
+        if ($hook !== null) {
+            try {
+                $hook($error);
+            } catch (\Throwable $hookError) {
+                $logger->error('[intempt] onFlagError hook threw; ignored', [
+                    'error' => $hookError->getMessage(),
+                ]);
+            }
+        }
+
+        return $error;
     }
 
     // -- privacy ----------------------------------------------------------

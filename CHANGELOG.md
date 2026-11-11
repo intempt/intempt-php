@@ -20,6 +20,16 @@
   logged and ignored. `flush()` and `close()` return `['sent' => int, 'failed' => int]`.
   Caller mistakes still throw `IntemptConfigException`; `recommend()` still throws.
 
+### Added
+
+- **Flag errors are visible** (INT-7454). A new `onFlagError` option receives a
+  `FlagError` (`key`, `kind` auth/bad_request/server/timeout/network/parse,
+  `status`) whenever a flag call falls back to the default; a hook that throws is
+  logged and ignored. A 401/403 logs at error level once per client, naming the
+  key prefix and sourceId, then at debug. `variationDetail($key, $context, $default)`
+  is public and returns `FlagDetail` with `reason: 'error'` and the `FlagError` on
+  failure; a 200 with no choice still reads `off` (INT-7457). Nothing throws.
+
 ## 2.1.0 — unreleased
 
 ### Changed
