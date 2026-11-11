@@ -37,6 +37,7 @@ final class Intempt
     private Config $config;
     private readonly Transport $transport;
     private ?Buffer $buffer = null;
+    private readonly Delivery $delivery;
     private bool $optedIn = true;
     private bool $closed = false;
 
@@ -45,6 +46,10 @@ final class Intempt
     {
         $this->config = Config::resolve($options);
         $this->transport = new Transport($this->config, $this->config->credentials);
+        $this->delivery = new Delivery(
+            $this->config->logger(),
+            onFailure: $this->config->onDeliveryFailure,
+        );
 
         if ($this->config->batch !== null) {
             $this->buffer = new Buffer(
@@ -52,6 +57,7 @@ final class Intempt
                 $this->config->maxRequestEvents,
                 $this->config->logger(),
                 fn (array $events) => $this->send($events),
+                delivery: $this->delivery,
             );
         }
 
@@ -61,23 +67,32 @@ final class Intempt
 
     // -- data in ----------------------------------------------------------
 
-    /** @param array<string, mixed> $options */
-    public function track(string $event, array $options = []): void
+    /**
+     * True when the event was accepted: queued in batch mode, answered 2xx in direct mode. False
+     * when opted out or when delivery failed; the failure itself reaches `onDeliveryFailure`.
+     * Throws only for a caller mistake (bad name, no identifier, closed client).
+     *
+     * @param array<string, mixed> $options
+     */
+    public function track(string $event, array $options = []): bool
     {
         $this->assertEventName($event, 'track');
         Validate::identifier($options, 'track');
-        $this->submit([$this->buildEvent($event, $options)]);
+
+        return $this->submit([$this->buildEvent($event, $options)]);
     }
 
     /**
      * Send many events, chunked so one oversized call is not one oversized request.
      *
+     * True when every event was accepted, as for track().
+     *
      * @param list<array<string, mixed>> $events
      */
-    public function trackBatch(array $events): void
+    public function trackBatch(array $events): bool
     {
         if ($events === []) {
-            return;
+            return true;
         }
 
         $wire = [];
@@ -95,36 +110,39 @@ final class Intempt
         }
 
         if ($this->buffer !== null || !$this->isOptedIn()) {
-            $this->submit($wire);
-
-            return;
+            return $this->submit($wire);
         }
 
+        $accepted = true;
         foreach (Validate::chunk($wire, $this->config->maxRequestEvents) as $group) {
-            $this->send($group);
+            $accepted = $this->deliverNow($group) && $accepted;
         }
+
+        return $accepted;
     }
 
     /** @param array<string, mixed> $options */
-    public function identify(array $options): void
+    public function identify(array $options): bool
     {
         Validate::identifier($options, 'identify');
         $event = $options['event'] ?? null;
         $traits = $options['traits'] ?? null;
         unset($options['event'], $options['traits']);
         $options['userAttributes'] = $traits;
-        $this->submit([$this->buildEvent($this->reservedName($event, 'identify'), $options)]);
+
+        return $this->submit([$this->buildEvent($this->reservedName($event, 'identify'), $options)]);
     }
 
     /** @param array<string, mixed> $options */
-    public function group(array $options): void
+    public function group(array $options): bool
     {
         Validate::nonBlank($options['accountId'] ?? null, 'group', 'accountId');
         $event = $options['event'] ?? null;
         $attributes = $options['attributes'] ?? null;
         unset($options['event'], $options['attributes']);
         $options['accountAttributes'] = $attributes;
-        $this->submit([$this->buildEvent($this->reservedName($event, 'group'), $options)]);
+
+        return $this->submit([$this->buildEvent($this->reservedName($event, 'group'), $options)]);
     }
 
     // -- decisions out ----------------------------------------------------
@@ -452,21 +470,33 @@ final class Intempt
 
     // -- lifecycle --------------------------------------------------------
 
-    /** Drain the buffer. A no-op when batching is off. */
-    public function flush(): void
+    /**
+     * Drain the buffer and say how many events were sent and how many failed. Events kept because
+     * the server was unreachable are in neither count. A no-op (0/0) when batching is off.
+     *
+     * @return array{sent: int, failed: int}
+     */
+    public function flush(): array
     {
-        $this->buffer?->flush();
+        return $this->buffer?->flush() ?? ['sent' => 0, 'failed' => 0];
     }
 
-    /** Flush, then release the connection. The client is unusable after. */
-    public function close(): void
+    /**
+     * Flush, then release the connection. The client is unusable after. This is the SDK's shutdown:
+     * anything still buffered when the close budget runs out counts as failed.
+     *
+     * @return array{sent: int, failed: int}
+     */
+    public function close(): array
     {
         if ($this->closed) {
-            return;
+            return ['sent' => 0, 'failed' => 0];
         }
-        $this->buffer?->close();
+        $result = $this->buffer?->close() ?? ['sent' => 0, 'failed' => 0];
         $this->closed = true;
         $this->transport->close();
+
+        return $result;
     }
 
     // -- internals --------------------------------------------------------
@@ -576,23 +606,56 @@ final class Intempt
     }
 
     /** @param list<array<string, mixed>> $events */
-    private function submit(array $events): void
+    private function submit(array $events): bool
     {
         // A closed client throws; an opted-out client returns quietly. Silently
         // discarding a write after close is how events get lost without anyone
         // being told.
         $this->assertOpen();
-        if (!$this->isOptedIn() || $events === []) {
-            return;
+        if (!$this->isOptedIn()) {
+            return false;
+        }
+        if ($events === []) {
+            return true;
         }
         if ($this->buffer !== null) {
+            $accepted = true;
             foreach ($events as $event) {
-                $this->buffer->enqueue($event);
+                $accepted = $this->buffer->enqueue($event) && $accepted;
             }
 
-            return;
+            return $accepted;
         }
-        $this->send($events);
+
+        return $this->deliverNow($events);
+    }
+
+    /**
+     * Direct mode: the same policy as the buffer, but with no queue a request that never reached
+     * the server is dropped and reported rather than kept (CONTRACT-R2 §S1.5).
+     *
+     * @param list<array<string, mixed>> $events
+     */
+    private function deliverNow(array $events): bool
+    {
+        return $this->delivery->deliver(fn () => $this->send($events), $events, false)
+            === Delivery::SENT;
+    }
+
+    /**
+     * Consent follows the delivery table too (CONTRACT-R2 §S1): one resend on 503/429, never a throw.
+     *
+     * @param array<string, mixed> $body
+     *
+     * @internal
+     */
+    public function deliverRecord(string $path, array $body): bool
+    {
+        return $this->delivery->deliver(
+            fn () => $this->transport->post($path, $body),
+            [$body],
+            false
+        ) === Delivery::SENT;
     }
 
     /**

@@ -156,10 +156,10 @@ final class BareSampleTest extends TestCase
 
         self::assertSame(1, $result['status']);
         self::assertStringContainsString('status=500', $result['stderr']);
-        self::assertStringContainsString('retryable=true', $result['stderr']);
+        self::assertStringContainsString('kind=terminal', $result['stderr']);
     }
 
-    public function testA401IsReportedAsNotRetryable(): void
+    public function testA401IsReportedAsTerminal(): void
     {
         self::server()->expectMany(20, 401, '{}');
 
@@ -167,7 +167,7 @@ final class BareSampleTest extends TestCase
 
         self::assertSame(1, $result['status']);
         self::assertStringContainsString('status=401', $result['stderr']);
-        self::assertStringContainsString('retryable=false', $result['stderr']);
+        self::assertStringContainsString('kind=terminal', $result['stderr']);
     }
 
     public function testRecommendIsSkippedWithoutAFeedId(): void

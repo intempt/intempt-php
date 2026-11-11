@@ -16,7 +16,11 @@ final class Config
     public const DEFAULT_HOST = 'api.intempt.com';
 
     /** Options fixed at construction because the curl handle is built once. */
-    private const FIXED = ['org', 'project', 'apiKey', 'sourceId', 'batch', 'keepAlive'];
+    private const FIXED = [
+        'org', 'project', 'apiKey', 'sourceId', 'batch', 'keepAlive',
+        // The delivery policy holds it from construction, the same as the buffer.
+        'onDeliveryFailure',
+    ];
 
     public function __construct(
         public readonly string $org,
@@ -41,6 +45,8 @@ final class Config
         public readonly ?BatchOptions $batch = null,
         public readonly int $maxRequestEvents = 50,
         public readonly ?Logger $logger = null,
+        /** @var (\Closure(DeliveryFailure): void)|null */
+        public readonly ?\Closure $onDeliveryFailure = null,
     ) {
     }
 
@@ -150,7 +156,22 @@ final class Config
             batch: $batch,
             maxRequestEvents: $maxRequestEvents,
             logger: $logger,
+            onDeliveryFailure: self::hook($options, 'onDeliveryFailure'),
         );
+    }
+
+    /** @param array<string, mixed> $options */
+    private static function hook(array $options, string $name): ?\Closure
+    {
+        $hook = $options[$name] ?? null;
+        if ($hook === null) {
+            return null;
+        }
+        if (!is_callable($hook)) {
+            throw new IntemptConfigException(sprintf('%s must be callable', $name));
+        }
+
+        return \Closure::fromCallable($hook);
     }
 
     /**
@@ -206,6 +227,7 @@ final class Config
             batch: $this->batch,
             maxRequestEvents: $patch['maxRequestEvents'] ?? $this->maxRequestEvents,
             logger: $patch['logger'] ?? $this->logger,
+            onDeliveryFailure: $this->onDeliveryFailure,
         );
     }
 

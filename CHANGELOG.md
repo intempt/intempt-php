@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Delivery is sent once — breaking for anyone relying on retries or on exceptions**
+  (INT-7436, INT-7444). 503 and 429 get exactly one resend after `Retry-After`,
+  clamped to 1–60 s (1 s when absent); a wait past 5 s drops instead of sleeping
+  inside the caller's request. Every other status, and a timeout after the request
+  was written, drops the batch. A request that never reached the server is kept for
+  the next flush in batch mode and dropped in direct mode. Removed: exponential
+  backoff, the 5-failure breaker, and 413 halving.
+- **Delivery problems are reported, not thrown — breaking in direct mode.** `track`,
+  `trackBatch`, `identify`, `group`, commerce and consent no longer throw
+  `IntemptApiException`. `track`, `trackBatch`, `identify` and `group` return `bool`
+  (accepted or not). A new `onDeliveryFailure` option receives a `DeliveryFailure`
+  once per batch on its final outcome (`kind` transport/terminal/dropped, `status`,
+  `eventCount`, `eventIds`, `retryAfter`, `terminal`); a listener that throws is
+  logged and ignored. `flush()` and `close()` return `['sent' => int, 'failed' => int]`.
+  Caller mistakes still throw `IntemptConfigException`; `recommend()` still throws.
+
 ## 2.1.0 — unreleased
 
 ### Changed

@@ -60,50 +60,34 @@ path is `…/track` rather than `…/sources/{id}/track`.
 
 ### Errors surface. Nothing is swallowed
 
-Every method raises/rejects on failure. No callback-swallow, no silent discard. This
-is the single biggest departure from mixpanel-node.
+A caller mistake raises. A delivery problem is reported through `onDeliveryFailure`
+and the `bool`/`{sent, failed}` results, never raised and never silently discarded.
 
-### Retry policy
+### Delivery policy
 
-| response | behaviour |
-| -------- | --------- |
-| 413, batch > 1 | halve the batch width, retry |
-| 413, batch = 1 | drop the event, log it, return the width to full |
-| 429 | honour `Retry-After`, else exponential backoff |
-| 5xx, 408, timeout | exponential backoff, floored at 100ms, capped at 10 min |
-| other 4xx | drop the batch, log status and body |
-| 5 consecutive failures | stop batching, report how many events are stranded |
-| 3 consecutive 413 drops | say the gateway body limit is the likely cause, once |
+| outcome | behaviour |
+| ------- | --------- |
+| 2xx | sent |
+| 503, 429 | resend **once** after `Retry-After`, clamped to 1–60 s (1 s when absent); a wait past 5 s drops instead of sleeping, because the wait would run inside your request |
+| any other status (400, 401–404, 408, 413, 500, 502, 504…) | drop, report |
+| timeout after the request was written | drop, report — it may have landed, so a resend could duplicate |
+| server never reached (DNS, refused, connect timeout) | batch mode: keep the batch for the next flush; direct mode: drop, report |
 
-Two width rules that are easy to get wrong, and were:
+"Report" means a log line plus `onDeliveryFailure`, which hears each batch's final
+outcome once (`DeliveryFailure`: `kind` transport/terminal/dropped, `status`,
+`eventCount`, `eventIds`, `retryAfter` seconds, `terminal`). Nothing is thrown for a
+delivery problem, in either mode (INT-7436, INT-7444).
 
-1. **A reduced width must recover.** Compare successes against the *current* width,
-   not the full width — `batch` is sliced to the current width, so a comparison
-   against full is unreachable and the reduction becomes permanent. Widen by doubling
-   after 10 consecutive successful sends that filled the width.
-2. **The drop tally must not change behaviour.** It is diagnostic only. Stopping on it
-   strands the queue; pinning the width to 1 on it caps throughput to one event per
-   round trip and loses more events than it saves requests.
-
-### Timestamps
-
-Client timestamps are honoured by the platform between 2010 and 2040. Below
-`LOW_TIMESTAMP_LIMIT` the request is rejected; **above `UP_TIMESTAMP_LIMIT` the server
-silently replaces the value with its own clock**. Send milliseconds. `/track` is
-milliseconds, `/consents/data` is **seconds** — the consent path divides.
-
-### Platform ids are strings, never numbers
-
-A 19-digit snowflake exceeds every language's safe integer range.
-`Number("1841710181319290880")` rounds to `1841710181319290900` and addresses a
-different source. Never coerce an id numerically, in any language, at any layer.
+The previous table (exponential backoff to 10 min, a breaker at 5 failures, 413
+halving with a widening ramp) is gone: R-retry and R-503 (CONTRACT-R2 §S1) allow one
+resend, for 503 and 429 only. The policy lives in `Delivery`, shared by the buffer,
+direct mode and consent.
 
 ### Delivery is at-least-once
 
 Ingestion has no idempotency key. `event_id` travels in the payload but is not a
 column in the events table, and the table is a plain `MergeTree` — nothing collapses
-duplicates. A retry after a lost response therefore duplicates rows. Say so in the
-README rather than letting callers infer exactly-once from the retry table.
+duplicates. That is why a timeout after the request was written is never resent.
 
 ### close() is bounded
 

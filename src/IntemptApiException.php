@@ -14,7 +14,12 @@ namespace Intempt;
  *
  * A null status means a transport failure or a timeout, which is why
  * isRetryable() treats it as retryable: nothing came back to say the request was
- * rejected on its merits.
+ * rejected on its merits. The SDK's own delivery policy does not use
+ * isRetryable(); it needs the finer split below (CONTRACT-R2 §S1).
+ *
+ * `unreached`: no byte of the request was sent (DNS, refused, connect timeout),
+ * so keeping it cannot duplicate. `timedOut` without `unreached`: the request was
+ * written and may have landed, so it must not be resent.
  */
 class IntemptApiException extends IntemptException
 {
@@ -24,6 +29,8 @@ class IntemptApiException extends IntemptException
         public readonly ?string $body = null,
         public readonly ?int $retryAfterMs = null,
         ?\Throwable $previous = null,
+        public readonly bool $timedOut = false,
+        public readonly bool $unreached = false,
     ) {
         parent::__construct($message, 0, $previous);
     }

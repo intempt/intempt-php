@@ -11,7 +11,6 @@ declare(strict_types=1);
 
 namespace Intempt\Tests;
 
-use Intempt\IntemptApiException;
 use Intempt\IntemptConfigException;
 
 final class ClientTest extends TestCase
@@ -400,43 +399,69 @@ final class ClientTest extends TestCase
 
     // -- errors -----------------------------------------------------------
 
-    public function testSurfacesA500WithStatusAndBody(): void
+    public function testDirectModeDoesNotThrowOnA500AndSendsOnce(): void
     {
         self::server()->expect(500, '{"error":"boom"}');
-        try {
-            $this->client()->track('purchase', ['userId' => 'u1']);
-            self::fail('expected IntemptApiException');
-        } catch (IntemptApiException $exception) {
-            self::assertSame(500, $exception->status);
-            self::assertStringContainsString('boom', (string) $exception->body);
-            self::assertTrue($exception->isRetryable());
-        }
+        $this->client()->track('purchase', ['userId' => 'u1']);
+
+        self::assertCount(1, self::server()->requests());
+        self::assertTrue($this->logger->has('error', 'dropping 1 event(s)'));
+        self::assertSame(500, $this->logger->context['error'][0]['status']);
     }
 
-    public function testA400IsNotRetryable(): void
+    public function testDirectModeDoesNotThrowOnA400(): void
     {
         self::server()->expect(400, 'bad');
-        try {
-            $this->client()->track('purchase', ['userId' => 'u1']);
-            self::fail('expected IntemptApiException');
-        } catch (IntemptApiException $exception) {
-            self::assertFalse($exception->isRetryable());
-        }
+        $this->client()->track('purchase', ['userId' => 'u1']);
+
+        self::assertCount(1, self::server()->requests());
+    }
+
+    public function testDirectModeResendsA503OnceAfterRetryAfter(): void
+    {
+        self::server()->expect(503, '', ['Retry-After' => '1']);
+        self::server()->expect(200);
+        $started = microtime(true);
+        $this->client()->track('purchase', ['userId' => 'u1']);
+
+        self::assertCount(2, self::server()->requests());
+        self::assertGreaterThanOrEqual(0.9, microtime(true) - $started);
+        self::assertFalse($this->logger->has('error', 'dropping'));
+    }
+
+    public function testDirectModeDropsANeverReachedEventWithoutThrowing(): void
+    {
+        // Port 1 on loopback: refused before any byte. Direct mode has no queue to keep it in.
+        $this->client(['host' => '127.0.0.1:1'])->track('purchase', ['userId' => 'u1']);
+
+        self::assertTrue($this->logger->has('error', 'dropping 1 event(s)'));
+    }
+
+    public function testConsentDoesNotThrowOnA500(): void
+    {
+        self::server()->expect(500, 'boom');
+        $this->client()->consent->grant(['userId' => 'u1']);
+
+        self::assertCount(1, self::server()->requests());
+        self::assertTrue($this->logger->has('error', 'dropping 1 event(s)'));
     }
 
     public function testNeverLeaksTheCredentialThroughSurfacesTheSdkControls(): void
     {
         self::server()->expect(500, 'boom');
-        try {
-            $this->client()->track('purchase', ['userId' => 'u1']);
-            self::fail('expected IntemptApiException');
-        } catch (IntemptApiException $exception) {
-            $secret = 'sec0123456789abcdef';
-            $basic = base64_encode('pfx0123456789abcdef:sec0123456789abcdef');
-            foreach ([$exception->getMessage(), (string) $exception] as $view) {
-                self::assertStringNotContainsString($secret, $view);
-                self::assertStringNotContainsString($basic, $view);
-            }
+        $this->client()->track('purchase', ['userId' => 'u1']);
+
+        $secret = 'sec0123456789abcdef';
+        $basic = base64_encode('pfx0123456789abcdef:sec0123456789abcdef');
+        $views = [];
+        foreach (['debug', 'info', 'warning', 'error'] as $level) {
+            $views[] = json_encode($this->logger->calls[$level]);
+            $views[] = json_encode($this->logger->context[$level]);
+        }
+        self::assertNotEmpty($this->logger->calls['error']);
+        foreach ($views as $view) {
+            self::assertStringNotContainsString($secret, (string) $view);
+            self::assertStringNotContainsString($basic, (string) $view);
         }
     }
 

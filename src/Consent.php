@@ -78,6 +78,6 @@ final class Consent
                 : null,
         ]);
 
-        $this->client->transport()->post($config->projectPath('/consents/data'), $body);
+        $this->client->deliverRecord($config->projectPath('/consents/data'), $body);
     }
 }

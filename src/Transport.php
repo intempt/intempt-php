@@ -107,14 +107,26 @@ final class Transport
         if ($raw === false) {
             $errno = curl_errno($handle);
             $error = curl_error($handle);
+            // Read before dropHandle(). Connect time is not usable here: a reused
+            // keep-alive handle reports 0 even after writing the whole request.
+            $unreached = in_array(
+                $errno,
+                [CURLE_COULDNT_RESOLVE_PROXY, CURLE_COULDNT_RESOLVE_HOST, CURLE_COULDNT_CONNECT],
+                true
+            ) || (int) curl_getinfo($handle, CURLINFO_SIZE_UPLOAD_T) === 0;
             $this->dropHandle();
             if ($errno === CURLE_OPERATION_TIMEDOUT) {
                 throw new IntemptApiException(
-                    sprintf('request timed out after %.1fs', $this->config->timeout)
+                    sprintf('request timed out after %.1fs', $this->config->timeout),
+                    timedOut: true,
+                    unreached: $unreached,
                 );
             }
 
-            throw new IntemptApiException($error !== '' ? $error : 'transport failure');
+            throw new IntemptApiException(
+                $error !== '' ? $error : 'transport failure',
+                unreached: $unreached,
+            );
         }
 
         $headerSize = (int) curl_getinfo($handle, CURLINFO_HEADER_SIZE);
