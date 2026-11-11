@@ -415,7 +415,8 @@ final class Intempt
     }
 
     /**
-     * Suppress all outbound writes: track, batch, commerce and consent.
+     * Suppress all outbound tracking writes: track, batch and commerce. Consent
+     * is still sent, so a withdrawal reaches the server (ruling D-5).
      *
      * recommend() is unaffected — it sends an identifier the caller already
      * holds and returns a decision rather than storing anything.

@@ -327,16 +327,30 @@ final class ClientTest extends TestCase
 
     // -- privacy ----------------------------------------------------------
 
-    public function testOptOutSuppressesEveryWrite(): void
+    public function testOptOutSuppressesEveryTrackingWrite(): void
     {
         $client = $this->client();
         $client->optOut();
         $client->track('purchase', ['userId' => 'u1']);
         $client->identify(['userId' => 'u1']);
-        $client->consent->grant(['userId' => 'u1']);
         $client->ecommerce->ordered(['userId' => 'u1', 'products' => [['productId' => 'a']]]);
 
         self::assertSame([], self::server()->requests());
+    }
+
+    public function testOptOutStillSendsConsentGrantAndRevoke(): void
+    {
+        // Ruling D-5 (INT-7437): consent is the person's own instruction, so a withdrawal must
+        // reach the server precisely when they have opted out. intempt-js does not gate it either.
+        $client = $this->client();
+        $client->optOut();
+        $client->consent->grant(['userId' => 'u1']);
+        $client->consent->revoke(['userId' => 'u1']);
+
+        $requests = self::server()->requests();
+        self::assertCount(2, $requests);
+        self::assertStringEndsWith('/consents/data', $requests[0]['path']);
+        self::assertSame(['accept', 'reject'], array_column(array_column($requests, 'body'), 'action'));
     }
 
     public function testOptInRestoresSending(): void
