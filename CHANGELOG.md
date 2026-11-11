@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.1.0 — unreleased
+
+### Changed
+
+- **`sourceId` is validated at construction** (INT-7455). It must be a positive
+  64-bit integer as a string of digits (`^[1-9][0-9]{0,18}$`, at most
+  9223372036854775807), which is what the API parses. A value such as `"abc"`,
+  `"0"` or a 20-digit id used to pass and then fail every track and consent
+  call; it now throws.
+- **Consent is sent while opted out** (INT-7437, ruling D-5). After `optOut()`
+  consent records were dropped silently, so a person who had opted out could not
+  withdraw consent. Grant and revoke are now sent regardless of opt-out, as the
+  client SDKs do; tracking writes stay suppressed.
+
 ## 2.0.0 — 2026-09-03
 
 ### Removed
