@@ -147,10 +147,10 @@ try {
     $limits = $intempt->jsonVariation('rate_limits', $context, ['perMinute' => 60]);
     echo 'jsonVariation -> ' . json_encode($limits) . PHP_EOL;
 
-    // allFlags is for enumerating, not for a request path: it makes the service
-    // evaluate every running Server experience, and every evaluation reports an
-    // exposure — including for keys this code never reads. Two keys means two
-    // variation() calls, not one allFlags(). See docs/CONVENTIONS.md.
+    // allFlags evaluates without recording exposures; variation() is what records
+    // one. On a backend that predates INT-7456 every evaluation still reports an
+    // exposure, so prefer two variation() calls on a request path. See
+    // docs/CONVENTIONS.md.
     $flags = $intempt->allFlags($context);
     echo 'allFlags   -> ' . count($flags) . ' key(s): '
         . (implode(', ', array_keys($flags)) ?: '(none)') . PHP_EOL;

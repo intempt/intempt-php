@@ -210,9 +210,13 @@ final class Intempt
      * on mode. The older surface put the mode in the method name, which forced a caller to know
      * which it was before reading it and grew combinatorially with every new mode.
      */
-    public function variation(string $key, FlagContext $context, mixed $defaultValue): mixed
-    {
-        return $this->variationDetail($key, $context, $defaultValue)->value;
+    public function variation(
+        string $key,
+        FlagContext $context,
+        mixed $defaultValue,
+        bool $disableExposure = false,
+    ): mixed {
+        return $this->variationDetail($key, $context, $defaultValue, $disableExposure)->value;
     }
 
     /**
@@ -222,14 +226,21 @@ final class Intempt
      * response rather than present with a cause, so a served value and an unassigned key both read
      * `off`. That is stated, not guessed. What this does distinguish is a failure, which used to be
      * indistinguishable from "off".
+     *
+     * Reading a key records the exposure. `$disableExposure` evaluates without recording it, for a
+     * pre-render or a prefetch whose value may never be shown (INT-7456).
      */
-    public function variationDetail(string $key, FlagContext $context, mixed $defaultValue): FlagDetail
-    {
+    public function variationDetail(
+        string $key,
+        FlagContext $context,
+        mixed $defaultValue,
+        bool $disableExposure = false,
+    ): FlagDetail {
         $this->assertOpen();
         Validate::flagKey($key, 'variation');
         $this->assertAnswerable($context, 'variation');
 
-        [$choices, $error] = $this->choose($context, [$key], $key);
+        [$choices, $error] = $this->choose($context, [$key], $key, !$disableExposure);
         if ($error !== null) {
             return new FlagDetail($defaultValue, self::ERRORED, $error);
         }
@@ -249,16 +260,11 @@ final class Intempt
     /**
      * Every key assigned to this person, in one call.
      *
-     * **This is not a free read, and it is not a cheaper `variation()`.** Omitting `names` makes the
-     * service evaluate EVERY running Server experience, and every evaluation reports an exposure:
-     * `retrieveApiExperiences` -> `ChooserHelper.display` -> `publishEvent` -> Kafka. That is
-     * `EXP-SERVE-003` working as specified, not a defect, but the consequence here is specific: one
-     * call at request start enrols the caller in every running experiment, including keys this code
-     * never reads, inflating those denominators with people who were shown nothing.
-     *
-     * Use it to enumerate or to debug. For a request path that reads two keys, call `variation()`
-     * twice — that reports two exposures instead of all of them. There is no suppress flag on the
-     * endpoint today; see docs/CONVENTIONS.md.
+     * Evaluation only: the request carries `exposure: false`, so enumerating keys no longer enrols the
+     * caller in every running experiment (INT-7456). Reading a key with `variation()` is what records
+     * its exposure. Until audience-service honours the field it is ignored and every evaluation still
+     * reports an exposure (`ChooserHelper.display` -> `publishEvent`), so on such a backend this
+     * remains an enumerate-or-debug call, not a request-path read.
      *
      * @return array<string, mixed>
      */
@@ -267,7 +273,7 @@ final class Intempt
         $this->assertOpen();
         $this->assertAnswerable($context, 'allFlags');
         $out = [];
-        foreach ($this->choose($context, null, null)[0] as $choice) {
+        foreach ($this->choose($context, null, null, false)[0] as $choice) {
             $name = $choice['name'] ?? null;
             if (is_string($name) && $name !== '') {
                 $out[$name] = $choice['body'] ?? null;
@@ -277,18 +283,26 @@ final class Intempt
         return $out;
     }
 
-    public function boolVariation(string $key, FlagContext $context, bool $defaultValue): bool
-    {
-        $value = $this->variation($key, $context, $defaultValue);
+    public function boolVariation(
+        string $key,
+        FlagContext $context,
+        bool $defaultValue,
+        bool $disableExposure = false,
+    ): bool {
+        $value = $this->variation($key, $context, $defaultValue, $disableExposure);
 
         // A served value of the wrong type is a misconfiguration, not something to coerce:
         // (bool) 'false' is true, and a silent coercion is indistinguishable from a real answer.
         return is_bool($value) ? $value : $defaultValue;
     }
 
-    public function stringVariation(string $key, FlagContext $context, string $defaultValue): string
-    {
-        $value = $this->variation($key, $context, $defaultValue);
+    public function stringVariation(
+        string $key,
+        FlagContext $context,
+        string $defaultValue,
+        bool $disableExposure = false,
+    ): string {
+        $value = $this->variation($key, $context, $defaultValue, $disableExposure);
 
         return is_string($value) ? $value : $defaultValue;
     }
@@ -296,9 +310,10 @@ final class Intempt
     public function numberVariation(
         string $key,
         FlagContext $context,
-        int|float $defaultValue
+        int|float $defaultValue,
+        bool $disableExposure = false,
     ): int|float {
-        $value = $this->variation($key, $context, $defaultValue);
+        $value = $this->variation($key, $context, $defaultValue, $disableExposure);
 
         // is_numeric() would accept the STRING '42', so the check is on type, not value.
         // No bool guard is needed here: unlike Python, PHP's is_int() is false for true.
@@ -315,9 +330,13 @@ final class Intempt
      * @param array<array-key, mixed> $defaultValue
      * @return array<array-key, mixed>
      */
-    public function jsonVariation(string $key, FlagContext $context, array $defaultValue): array
-    {
-        $value = $this->variation($key, $context, $defaultValue);
+    public function jsonVariation(
+        string $key,
+        FlagContext $context,
+        array $defaultValue,
+        bool $disableExposure = false,
+    ): array {
+        $value = $this->variation($key, $context, $defaultValue, $disableExposure);
 
         return is_array($value) ? $value : $defaultValue;
     }
@@ -375,7 +394,7 @@ final class Intempt
      * @param list<string>|null $names
      * @return array{0: list<array<string, mixed>>, 1: FlagError|null}
      */
-    private function choose(FlagContext $context, ?array $names, ?string $key): array
+    private function choose(FlagContext $context, ?array $names, ?string $key, bool $recordExposure): array
     {
         $body = Validate::compact([
             'identification' => Validate::compact([
@@ -396,6 +415,9 @@ final class Intempt
             // it also means device targeting is bypassed rather than honoured, which is correct for
             // a server SDK that has no user agent to read.
             'device' => 'all',
+            // Absent, not true, when recording: a backend without the field (and every older SDK)
+            // records exactly as before. false = evaluate only (CONTRACT-R2 §S4).
+            'exposure' => $recordExposure ? null : false,
         ]);
 
         try {

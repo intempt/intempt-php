@@ -30,6 +30,12 @@
   is public and returns `FlagDetail` with `reason: 'error'` and the `FlagError` on
   failure; a 200 with no choice still reads `off` (INT-7457). Nothing throws.
 
+- **Evaluation is separate from exposure** (INT-7456, SDK side). `allFlags()` sends
+  `exposure: false` (evaluate only). Single-flag reads still record the exposure
+  (field absent, so older backends behave as before) and take
+  `disableExposure: true` per call for pre-render/prefetch. Needs the
+  audience-service change to take effect; an older backend ignores the field.
+
 ## 2.1.0 — unreleased
 
 ### Changed

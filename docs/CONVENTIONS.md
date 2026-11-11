@@ -36,13 +36,13 @@ to this repo. Where the two disagree, the contract wins and this file is the bug
 
 ## Flags: three things the surface does not say for itself
 
-**`allFlags()` is not a cheaper `variation()`. It enrols the caller in everything.** Omitting `names`
-makes the service evaluate every running Server experience, and every evaluation reports an exposure
-(`ChooserHelper.display` -> `publishEvent` -> Kafka). That is `EXP-SERVE-003` behaving as specified,
-not a defect — but the effect on this surface is that one call at request start records an exposure
-against every running experiment, including keys the code never reads, inflating those denominators
-with people who were shown nothing. Use it to enumerate or to debug; read two keys with two
-`variation()` calls. The endpoint has no suppress flag today, so this cannot be fixed in the SDK.
+**`allFlags()` evaluates; `variation()` exposes.** `allFlags()` sends `exposure: false`, so it no longer
+records an exposure against every running experiment; reading a key with `variation()` (and the typed
+variants) records that key's exposure, and `disableExposure: true` opts a single read out for a
+pre-render or prefetch (INT-7456, CONTRACT-R2 §S4). This needs the audience-service side of INT-7456:
+a backend without the `exposure` field ignores it and still records an exposure for every evaluation
+(`ChooserHelper.display` -> `publishEvent` -> Kafka), so until that ships treat `allFlags()` as an
+enumerate-or-debug call and read two keys with two `variation()` calls.
 
 **Identifier precedence is not the argument order.** `buildAudienceRequest` tests
 `sourceId != null && profileId` non-blank FIRST and only then falls through to `userId`. A context
