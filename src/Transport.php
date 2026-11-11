@@ -107,13 +107,10 @@ final class Transport
         if ($raw === false) {
             $errno = curl_errno($handle);
             $error = curl_error($handle);
-            // Read before dropHandle(). Connect time is not usable here: a reused
-            // keep-alive handle reports 0 even after writing the whole request.
-            $unreached = in_array(
-                $errno,
-                [CURLE_COULDNT_RESOLVE_PROXY, CURLE_COULDNT_RESOLVE_HOST, CURLE_COULDNT_CONNECT],
-                true
-            ) || (int) curl_getinfo($handle, CURLINFO_SIZE_UPLOAD_T) === 0;
+            // Read before dropHandle(). Zero bytes uploaded covers DNS failure, refused
+            // and connect timeout. Connect time is not usable here: a reused keep-alive
+            // handle reports 0 even after writing the whole request.
+            $unreached = (int) curl_getinfo($handle, CURLINFO_SIZE_UPLOAD_T) === 0;
             $this->dropHandle();
             if ($errno === CURLE_OPERATION_TIMEDOUT) {
                 throw new IntemptApiException(

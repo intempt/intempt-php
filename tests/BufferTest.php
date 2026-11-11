@@ -330,6 +330,20 @@ final class BufferTest extends TestCase
         self::assertLessThan(3.0, microtime(true) - $started);
     }
 
+    public function testCloseDropsRatherThanStartAResendWaitPastItsDeadline(): void
+    {
+        // Inside the 5 s cap, so only the close deadline can stop this wait.
+        $attempts = 0;
+        $buffer = $this->buffer(self::counting($attempts, self::answered(503, 2_000)), self::options(), 0.12);
+        $buffer->enqueue(self::event('a'));
+        $buffer->close();
+
+        self::assertSame(1, $attempts);
+        self::assertSame([], $this->sleeps);
+        self::assertSame(0, $buffer->size());
+        self::assertTrue($this->logger->has('error', 'dropping 1 event(s)'));
+    }
+
     public function testCloseSaysHowManyItAbandoned(): void
     {
         $buffer = $this->buffer(

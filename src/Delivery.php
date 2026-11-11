@@ -30,7 +30,7 @@ final class Delivery
     public const KEPT = 'kept';
 
     private const MIN_WAIT_MS = 1_000;
-    private const MAX_WAIT_MS = 60_000;
+    /** Subsumes the contract's 60 s ceiling: any wait past it drops instead (server SDK rule). */
     private const SERVER_WAIT_CAP_MS = 5_000;
 
     private readonly \Closure $sleep;
@@ -199,7 +199,7 @@ final class Delivery
     {
         $advised = $error instanceof IntemptApiException ? $error->retryAfterMs : null;
 
-        return min(self::MAX_WAIT_MS, max(self::MIN_WAIT_MS, $advised ?? self::MIN_WAIT_MS));
+        return max(self::MIN_WAIT_MS, $advised ?? self::MIN_WAIT_MS);
     }
 
     /**
