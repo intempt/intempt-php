@@ -40,10 +40,9 @@ final class Consent
             );
         }
 
+        // Deliberately NOT gated on opt-out (ruling D-5, INT-7437): a withdrawal must reach the
+        // server precisely when the person has opted out. intempt-js consent() does the same.
         $this->client->assertOpen();
-        if (!$this->client->isOptedIn()) {
-            return;
-        }
 
         $config = $this->client->config();
         if (Validate::present($profileId) && $config->sourceId === null) {

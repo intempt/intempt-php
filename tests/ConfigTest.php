@@ -105,6 +105,41 @@ final class ConfigTest extends BaseTestCase
         self::assertNull(Config::resolve(self::options())->sourceId);
     }
 
+    /** @return array<string, array{mixed}> */
+    public static function notAPositiveLong(): array
+    {
+        return [
+            'letters' => ['abc'],
+            'trailing letter' => ['12a'],
+            'zero' => ['0'],
+            'leading zero' => ['01'],
+            'negative' => ['-5'],
+            'leading space' => [' 1'],
+            'trailing newline' => ["1\n"],
+            'decimal' => ['1.5'],
+            'Long.MAX + 1' => ['9223372036854775808'],
+            '20 digits' => ['12345678901234567890'],
+            'negative int' => [-5],
+        ];
+    }
+
+    // INT-7455: the backend parses sourceId as a positive Java long; anything else failed every
+    // call silently instead of failing construction.
+    #[\PHPUnit\Framework\Attributes\DataProvider('notAPositiveLong')]
+    public function testASourceIdThatIsNotAPositiveLongIsRejected(mixed $sourceId): void
+    {
+        $this->expectException(IntemptConfigException::class);
+        $this->expectExceptionMessage('"sourceId" must be a positive 64-bit integer');
+        Config::resolve(self::options(['sourceId' => $sourceId]));
+    }
+
+    public function testThePositiveLongBoundsAreAcceptedWithEveryDigit(): void
+    {
+        foreach (['1', '1841503112918048768', '9223372036854775807'] as $sourceId) {
+            self::assertSame($sourceId, Config::resolve(self::options(['sourceId' => $sourceId]))->sourceId);
+        }
+    }
+
     // ---- host and port ----
 
     public function testAHostWithoutAPortLeavesThePortUnset(): void

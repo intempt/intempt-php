@@ -16,7 +16,7 @@ final class Intempt
     /** A response the service did not answer is reported as such rather than guessed at. */
     private const UNANSWERED = 'off';
 
-    public const VERSION = '2.0.0';
+    public const VERSION = '2.1.0';
 
     /** Reserved event name the platform interprets as an identity write. */
     public const IDENTIFY_EVENT = 'Identify';
@@ -415,7 +415,8 @@ final class Intempt
     }
 
     /**
-     * Suppress all outbound writes: track, batch, commerce and consent.
+     * Suppress all outbound tracking writes: track, batch and commerce. Consent
+     * is still sent, so a withdrawal reaches the server (ruling D-5).
      *
      * recommend() is unaffected — it sends an identifier the caller already
      * holds and returns a decision rather than storing anything.
