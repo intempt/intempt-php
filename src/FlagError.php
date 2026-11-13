@@ -5,7 +5,8 @@
  *
  * `kind`: auth (401/403), bad_request (other 4xx), server (5xx and 429), timeout
  * (no answer in time, or 408), network (never reached the service), parse (an
- * answer that is not the JSON object the service sends). `key` is null for allFlags().
+ * answer that is not the JSON object the service sends, or whose `choices` is present but
+ * not a list; a missing `choices` is no choice, not an error). `key` is null for allFlags().
  *
  * Copyright 2026 Intempt Technologies
  * Licensed under the Apache License, Version 2.0.

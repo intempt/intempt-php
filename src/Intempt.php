@@ -432,9 +432,14 @@ final class Intempt
         if (!is_array($response)) {
             return [[], $this->flagFailed(new FlagError($key, 'parse'))];
         }
-        $choices = $response['choices'] ?? null;
+        // Missing or null `choices` is an honest "nothing served"; anything else that is not a list
+        // is a malformed answer. Same rule as intempt-node src/flags.ts #choose.
+        $choices = $response['choices'] ?? [];
+        if (!is_array($choices) || !array_is_list($choices)) {
+            return [[], $this->flagFailed(new FlagError($key, 'parse'))];
+        }
 
-        return [is_array($choices) ? array_values($choices) : [], null];
+        return [$choices, null];
     }
 
     private static function classifyFlagError(?string $key, \Throwable $error): FlagError

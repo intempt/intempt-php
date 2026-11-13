@@ -38,7 +38,9 @@
   logged and ignored. A 401/403 logs at error level once per client, naming the
   key prefix and sourceId, then at debug. `variationDetail($key, $context, $default)`
   is public and returns `FlagDetail` with `reason: 'error'` and the `FlagError` on
-  failure; a 200 with no choice still reads `off` (INT-7457). Nothing throws.
+  failure; a 200 with no choice, or with no `choices` field, still reads `off`
+  (INT-7457). A 200 whose `choices` is present but not a list is kind `parse`, as in
+  intempt-node. Nothing throws.
 
 - **Evaluation is separate from exposure** (INT-7456, SDK side). `allFlags()` sends
   `exposure: false` (evaluate only). Single-flag reads still record the exposure

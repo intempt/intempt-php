@@ -89,6 +89,49 @@ final class FlagErrorTest extends TestCase
         self::assertSame('parse', $this->errors[0]->kind);
     }
 
+    /** @return array<string, array{0: string}> */
+    public static function choicesThatAreNotAList(): array
+    {
+        return [
+            'a string' => ['{"choices":"x"}'],
+            'an object' => ['{"choices":{"a":1}}'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('choicesThatAreNotAList')]
+    public function testChoicesThatAreNotAListAreReportedAsParse(string $body): void
+    {
+        self::server()->expect(200, $body);
+        $detail = $this->flagClient()->variationDetail('k', $this->context(), 'd');
+
+        self::assertSame('d', $detail->value);
+        self::assertSame('error', $detail->reason);
+        self::assertCount(1, $this->errors);
+        self::assertSame('k', $this->errors[0]->key);
+        self::assertSame('parse', $this->errors[0]->kind);
+        self::assertNull($this->errors[0]->status, 'parity with intempt-node: parse carries no status');
+        self::assertTrue($this->logger->has('warning', 'flag evaluation failed'));
+    }
+
+    public function testAllFlagsReportsChoicesThatAreNotAListWithANullKey(): void
+    {
+        self::server()->expect(200, '{"choices":"x"}');
+        self::assertSame([], $this->flagClient()->allFlags($this->context()));
+
+        self::assertCount(1, $this->errors);
+        self::assertNull($this->errors[0]->key);
+        self::assertSame('parse', $this->errors[0]->kind);
+    }
+
+    public function testAnAnswerWithNoChoicesFieldIsNotAnError(): void
+    {
+        self::server()->expect(200, '{}');
+        $detail = $this->flagClient()->variationDetail('k', $this->context(), 'd');
+
+        self::assertSame([], $this->errors);
+        self::assertSame('off', $detail->reason);
+    }
+
     public function testAllFlagsReportsWithANullKey(): void
     {
         self::server()->expect(500, '{}');
