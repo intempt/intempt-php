@@ -17,7 +17,7 @@ final class Intempt
     private const UNANSWERED = 'off';
     private const ERRORED = 'error';
 
-    public const VERSION = '2.1.0';
+    public const VERSION = '3.0.0';
 
     /** Reserved event name the platform interprets as an identity write. */
     public const IDENTIFY_EVENT = 'Identify';
