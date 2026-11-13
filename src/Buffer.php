@@ -60,14 +60,22 @@ final class Buffer
 
         if ($options->flushOnExit) {
             register_shutdown_function(function (): void {
-                // A shutdown function must never throw: it runs while PHP is
-                // tearing down and an exception there is reported without
-                // context.
-                try {
-                    $this->flush();
-                } catch (\Throwable) {
-                }
+                $this->shutdown();
             });
+        }
+    }
+
+    /**
+     * The flushOnExit hook. Public so the exit path is testable without ending the process.
+     */
+    public function shutdown(): void
+    {
+        // close(), not flush(): flush() returns at once on a kept batch, and the process ends right
+        // after, so those events would vanish unreported. A shutdown function must never throw: it
+        // runs while PHP is tearing down and an exception there is reported without context.
+        try {
+            $this->close();
+        } catch (\Throwable) {
         }
     }
 

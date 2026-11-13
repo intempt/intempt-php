@@ -152,6 +152,19 @@ final class DeliveryFailureTest extends TestCase
         self::assertSame(['sent' => 0, 'failed' => 2], $result);
     }
 
+    public function testTheExitHookReportsAKeptBatchAsDroppedInsteadOfLosingIt(): void
+    {
+        // Ro-bot mcp-1794574163-40 php n2:impact:F1: the hook called flush(), which returns at once on
+        // a kept batch, so an unreachable host at exit lost the events with no report.
+        $buffer = $this->buffer(self::throwing(new IntemptApiException('refused', unreached: true)));
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+        $buffer->shutdown();
+
+        self::assertSame(['transport', 'dropped'], array_map(static fn ($f) => $f->kind, $this->failures));
+        self::assertSame(['a', 'b'], $this->failures[1]->eventIds);
+    }
+
     public function testAFullQueueReportsTheDroppedEvent(): void
     {
         $buffer = null;
