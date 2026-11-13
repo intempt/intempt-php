@@ -16,20 +16,29 @@ final class Consent
     {
     }
 
-    /** @param array<string, mixed> $options */
-    public function grant(array $options): void
+    /**
+     * True when the server took the record. A delivery failure returns false, is logged at error
+     * level and reaches onDeliveryFailure once (ruling R2); only a caller mistake throws.
+     *
+     * @param array<string, mixed> $options
+     */
+    public function grant(array $options): bool
     {
-        $this->record('accept', $options);
+        return $this->record('accept', $options);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     *
+     * @see self::grant() for the return value
+     */
+    public function revoke(array $options): bool
+    {
+        return $this->record('reject', $options);
     }
 
     /** @param array<string, mixed> $options */
-    public function revoke(array $options): void
-    {
-        $this->record('reject', $options);
-    }
-
-    /** @param array<string, mixed> $options */
-    private function record(string $action, array $options): void
+    private function record(string $action, array $options): bool
     {
         $name = $action === 'accept' ? 'consent.grant' : 'consent.revoke';
         $userId = $options['userId'] ?? null;
@@ -78,6 +87,6 @@ final class Consent
                 : null,
         ]);
 
-        $this->client->deliverRecord($config->projectPath('/consents/data'), $body);
+        return $this->client->deliverRecord($config->projectPath('/consents/data'), $body);
     }
 }

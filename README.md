@@ -49,12 +49,16 @@ By default each call sends one request and returns when the server responds.
 | `trackBatch($events)` | `bool` | `POST …/track`, chunked |
 | `identify($options)` | `bool` | `POST …/track` (reserved `Identify`) |
 | `group($options)` | `bool` | `POST …/track` (reserved `Identify`) |
-| `consent->grant($options)` | `void` | `POST …/consents/data` |
-| `consent->revoke($options)` | `void` | `POST …/consents/data` |
+| `consent->grant($options)` | `bool` | `POST …/consents/data` |
+| `consent->revoke($options)` | `bool` | `POST …/consents/data` |
 | `ecommerce->productViewed($options)` | `void` | `POST …/track` |
 | `ecommerce->addedToCart($options)` | `void` | `POST …/track` |
 | `ecommerce->ordered($options)` | `void` | `POST …/track` |
 | `recommend($options)` | `mixed` | `POST …/feeds/{id}/data` |
+| `variation($key, $context, $default, $disableExposure = false)` | `mixed` | `POST …/optimization/choose-api` |
+| `variationDetail($key, $context, $default, $disableExposure = false)` | `FlagDetail` | `POST …/optimization/choose-api` |
+| `boolVariation` / `stringVariation` / `numberVariation` / `jsonVariation` | typed value | `POST …/optimization/choose-api` |
+| `allFlags($context)` | `array` | `POST …/optimization/choose-api` (no exposure) |
 | `optIn()` / `optOut()` / `isOptedIn()` | — | — |
 | `flush()` / `close()` | `array{sent, failed}` | — |
 | `setConfig($patch)` / `config()` / `buffered()` | — | — |
@@ -62,7 +66,14 @@ By default each call sends one request and returns when the server responds.
 A caller mistake (bad name, missing identifier, closed client) throws.
 `track`, `trackBatch`, `identify` and `group` return `bool` — accepted (queued in batch
 mode, answered 2xx in direct mode) or not — and never throw for a delivery problem;
-those reach `onDeliveryFailure` (see the delivery policy below). `recommend()` throws
+those reach `onDeliveryFailure` (see the delivery policy below).
+A flag read never throws for a service problem: it returns `$default`, and the failure
+reaches the `onFlagError` option as a `FlagError`. `variationDetail()` returns the same
+value plus `reason: 'error'` and the `FlagError` when the call failed; the service sends no
+reason, so a served value and an unassigned key both read `off`. `consent->grant` and
+`consent->revoke` are always sent at once, batch mode or not, and return `true` only when
+the server answered 2xx; a failure returns `false`, is logged at error level and reaches
+`onDeliveryFailure` once. `recommend()` throws
 `IntemptApiException` on failure.
 
 ## Identifiers
@@ -94,6 +105,14 @@ $intempt = new Intempt([
 `close()` drains for at most 30 seconds, then logs and reports (`dropped`) the events
 it gave up on. `flush()` is **not** bounded.
 
+**While the server is unreachable.** PHP has no timer, so `flushMs` is the wait after a
+batch that never reached the server: for that long, reaching `size` sends nothing, so a
+dead host is not hit on every `track()`. The first `track()` that reaches `size` after the
+wait makes the next attempt; an explicit `flush()`, `close()` or the exit hook (`flushOnExit`)
+tries at once. The kept batch is reported once, as `transport`. Meanwhile `maxQueue` bounds
+memory: when it is reached the **oldest** waiting event is dropped and reported `dropped`,
+and the new event is queued (`track()` returns `true`).
+
 ### Delivery policy
 
 | outcome | behaviour |
@@ -102,7 +121,7 @@ it gave up on. `flush()` is **not** bounded.
 | 503, 429 | resend **once** after `Retry-After`, clamped to 1–60 s (1 s when absent); a wait past 5 s drops instead of sleeping, because the wait would run inside your request |
 | any other status (400, 401–404, 408, 413, 500, 502, 504…) | drop, report |
 | timeout after the request was written | drop, report — it may have landed, so a resend could duplicate |
-| server never reached (DNS, refused, connect timeout) | batch mode: keep the batch for the next flush; direct mode: drop, report |
+| server never reached (DNS, refused, connect timeout) | batch mode: keep the batch for the next attempt (above); direct mode and consent: drop, report |
 
 "Report" means a log line plus `onDeliveryFailure`, which hears each batch's final
 outcome once (`DeliveryFailure`: `kind` transport/terminal/dropped, `status`,

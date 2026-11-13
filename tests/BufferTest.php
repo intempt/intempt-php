@@ -47,6 +47,9 @@ final class BufferTest extends TestCase
     /** @var list<int> */
     private array $sleeps = [];
 
+    /** Seconds, read by the buffer's injected clock. */
+    private float $now = 100.0;
+
     /** @param callable(list<array<string, mixed>>): void $send */
     private function buffer(
         callable $send,
@@ -64,6 +67,7 @@ final class BufferTest extends TestCase
             new Delivery($this->logger, sleep: function (int $ms): void {
                 $this->sleeps[] = $ms;
             }),
+            fn (): float => $this->now,
         );
     }
 
@@ -316,6 +320,172 @@ final class BufferTest extends TestCase
 
         self::assertSame(['e2', 'e3', 'e4', 'e5'], $delivered);
         self::assertSame(0, $buffer->size());
+    }
+
+    // -- a kept batch waits for the flush interval (ruling R4) ------------
+
+    private function offlineThenUp(int &$attempts, int $offline): Buffer
+    {
+        $failures = array_fill(0, $offline, new IntemptApiException('connection refused', unreached: true));
+
+        return $this->buffer(
+            self::counting($attempts, ...$failures),
+            self::options(size: 2, flushMs: 1_000, maxQueue: 100)
+        );
+    }
+
+    public function testEnqueueStartsNoAttemptWhileAKeptBatchWaits(): void
+    {
+        $attempts = 0;
+        $buffer = $this->offlineThenUp($attempts, 1);
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+        self::assertSame(1, $attempts);
+
+        $this->now = 100.999;
+        for ($i = 0; $i < 6; ++$i) {
+            $buffer->enqueue(self::event("e$i"));
+        }
+
+        self::assertSame(1, $attempts, 'a host that is down must not be hit on every track()');
+        self::assertSame(8, $buffer->size());
+    }
+
+    public function testTheFirstWidthTriggerAtTheFlushIntervalMakesTheNextAttempt(): void
+    {
+        $attempts = 0;
+        $buffer = $this->offlineThenUp($attempts, 1);
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+
+        $this->now = 101.0;
+        $buffer->enqueue(self::event('c'));
+
+        self::assertSame(3, $attempts, 'exactly one flush interval after the kept attempt');
+        self::assertSame(0, $buffer->size(), 'the run drains the queue, partial tail included');
+    }
+
+    public function testBelowTheWidthNothingIsSentEvenAfterTheInterval(): void
+    {
+        $attempts = 0;
+        $buffer = $this->offlineThenUp($attempts, 1);
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+        $buffer->flush();
+        self::assertSame(2, $attempts);
+
+        $this->now = 200.0;
+        $buffer->enqueue(self::event('c'));
+
+        self::assertSame(2, $attempts);
+        self::assertSame(1, $buffer->size());
+    }
+
+    public function testAnExplicitFlushRetriesInsideTheInterval(): void
+    {
+        $attempts = 0;
+        $buffer = $this->offlineThenUp($attempts, 1);
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+
+        $this->now = 100.001;
+        $result = $buffer->flush();
+
+        self::assertSame(2, $attempts);
+        self::assertSame(['sent' => 2, 'failed' => 0], $result);
+    }
+
+    public function testAnotherKeptAttemptRestartsTheInterval(): void
+    {
+        $attempts = 0;
+        $buffer = $this->offlineThenUp($attempts, 2);
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+
+        $this->now = 101.0;
+        $buffer->enqueue(self::event('c'));
+        self::assertSame(2, $attempts);
+
+        $this->now = 101.999;
+        $buffer->enqueue(self::event('d'));
+        self::assertSame(2, $attempts, 'the interval counts from the latest kept attempt');
+
+        $this->now = 102.0;
+        $buffer->enqueue(self::event('e'));
+        self::assertSame(5, $attempts);
+        self::assertSame(0, $buffer->size());
+    }
+
+    public function testASettledFlushEndsTheWait(): void
+    {
+        $attempts = 0;
+        $buffer = $this->offlineThenUp($attempts, 1);
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+        $this->now = 100.1;
+        $buffer->flush();
+
+        $this->now = 100.2;
+        $buffer->enqueue(self::event('c'));
+        $buffer->enqueue(self::event('d'));
+
+        self::assertSame(3, $attempts, 'the width trigger is live again once the host answered');
+        self::assertSame(0, $buffer->size());
+    }
+
+    public function testAFullQueueDropsTheOldestEventWhileABatchIsKept(): void
+    {
+        $sent = [];
+        $up = false;
+        $buffer = $this->buffer(
+            static function (array $events) use (&$sent, &$up): void {
+                if (!$up) {
+                    throw new IntemptApiException('connection refused', unreached: true);
+                }
+                foreach ($events as $event) {
+                    $sent[] = $event['name'];
+                }
+            },
+            self::options(size: 2, flushMs: 1_000, maxQueue: 3)
+        );
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+        $buffer->enqueue(self::event('c'));
+
+        self::assertTrue($buffer->enqueue(self::event('d')), 'the new event was queued');
+        self::assertSame(3, $buffer->size());
+        self::assertTrue($this->logger->has('error', 'batch queue full; oldest event dropped'));
+        self::assertSame(['name' => 'a', 'maxQueue' => 3], $this->logger->context['error'][0]);
+
+        $up = true;
+        $buffer->flush();
+        self::assertSame(['b', 'c', 'd'], $sent);
+    }
+
+    public function testAWriteDuringASendNeitherResendsNorEvictsTheInFlightBatch(): void
+    {
+        // The onDeliveryFailure listener and the send callback both run while the batch is still
+        // at the head of the queue, so a track() from either must not start a second send of that
+        // batch, and an eviction must not shift what the post-send splice removes.
+        $sent = [];
+        $buffer = null;
+        $buffer = $this->buffer(
+            static function (array $events) use (&$sent, &$buffer): void {
+                $sent[] = array_column($events, 'name');
+                if (count($sent) === 1) {
+                    $buffer->enqueue(self::event('c'));
+                    $buffer->flush();
+                    $buffer->enqueue(self::event('d'));
+                }
+            },
+            self::options(size: 2, flushMs: 1_000, maxQueue: 3)
+        );
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+
+        self::assertSame([['a', 'b'], ['d']], $sent, 'a, b once; c evicted; d sent by the outer run');
+        self::assertSame(0, $buffer->size());
+        self::assertSame(['name' => 'c', 'maxQueue' => 3], $this->logger->context['error'][0]);
     }
 
     // -- close budget -----------------------------------------------------

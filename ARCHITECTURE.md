@@ -71,12 +71,19 @@ and the `bool`/`{sent, failed}` results, never raised and never silently discard
 | 503, 429 | resend **once** after `Retry-After`, clamped to 1–60 s (1 s when absent); a wait past 5 s drops instead of sleeping, because the wait would run inside your request |
 | any other status (400, 401–404, 408, 413, 500, 502, 504…) | drop, report |
 | timeout after the request was written | drop, report — it may have landed, so a resend could duplicate |
-| server never reached (DNS, refused, connect timeout) | batch mode: keep the batch for the next flush; direct mode: drop, report |
+| server never reached (DNS, refused, connect timeout) | batch mode: keep the batch; the next attempt is an explicit `flush()`/`close()`/exit hook, or the first width-triggered `track()` once `flushMs` has passed (ruling R4); direct mode and consent: drop, report |
 
 "Report" means a log line plus `onDeliveryFailure`, which hears each batch's final
 outcome once (`DeliveryFailure`: `kind` transport/terminal/dropped, `status`,
 `eventCount`, `eventIds`, `retryAfter` seconds, `terminal`). Nothing is thrown for a
 delivery problem, in either mode (INT-7436, INT-7444).
+
+PHP has no timer, which is why `flushMs` gates the width trigger instead of scheduling a
+flush. Refusing every width-triggered attempt while a batch waits would leave it stuck in a
+worker that never calls `flush()` and runs with `flushOnExit: false`, until `maxQueue`
+evicted it. At `maxQueue` the oldest event not carried by an in-progress send is evicted and
+reported `dropped`. A `track()` or `flush()` made from inside a send (the send callback or the
+`onDeliveryFailure` listener) starts no nested send of the in-flight head.
 
 The previous table (exponential backoff to 10 min, a breaker at 5 failures, 413
 halving with a widening ramp) is gone: R-retry and R-503 (CONTRACT-R2 §S1) allow one

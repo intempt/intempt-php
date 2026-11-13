@@ -19,10 +19,11 @@ to this repo. Where the two disagree, the contract wins and this file is the bug
 - **A wrong-typed value falls back; it is never coerced.** A flag configured as a string and read as
   a boolean returns the caller's default, not `true`. Coercion makes a misconfiguration look like a
   deliberate value.
-- **`variationDetail` is NOT exposed.** It would carry a reason, and the serving response does not
-  send one — so it could only report "off" for a person who was in fact targeted and served, which
-  is the single thing such a method exists to tell you. It stays internal until the platform sends
-  a reason. Do not re-add it, and do not document it.
+- **`variationDetail` is public, in every SDK** (Beso ruling R1, 2026-11-13), together with
+  `FlagDetail`, its `reason`, `disableExposure` and `onFlagError`. What it can tell you is limited
+  by the wire: the serving response sends no reason (INT-7457), so a served value and an unassigned
+  key both read `off`. Its job is to separate a FAILURE (`reason: 'error'` plus the `FlagError`)
+  from "off", which a bare `variation()` cannot. Do not invent a reason the response did not send.
 - **Evaluation is REMOTE only.** No local rule engine, no flag store to poll, and no hashing
   utility: the server decides, so no second implementation can disagree with it.
   `check-no-local-bucketing.mjs` enforces this in CI (EXP-ASSIGN-001..005) and a new bucketing

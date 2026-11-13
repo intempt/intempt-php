@@ -170,6 +170,67 @@ final class DeliveryFailureTest extends TestCase
         self::assertSame(['overflow'], $this->failures[0]->eventIds);
     }
 
+    public function testAnEvictedOldestEventIsReportedAsDropped(): void
+    {
+        $buffer = $this->buffer(
+            self::throwing(new IntemptApiException('refused', unreached: true)),
+            size: 2,
+            maxQueue: 2
+        );
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+        $buffer->enqueue(self::event('c'));
+
+        self::assertSame(['transport', 'dropped'], array_map(static fn ($f) => $f->kind, $this->failures));
+        self::assertSame(['a'], $this->failures[1]->eventIds);
+        self::assertTrue($this->failures[1]->terminal);
+    }
+
+    // -- consent is reported, never thrown, never silent (ruling R2) ------
+
+    public function testAFailedConsentRevokeReturnsFalseReportsOnceAndLogsAnError(): void
+    {
+        $seen = [];
+        $client = $this->client(['onDeliveryFailure' => static function (DeliveryFailure $f) use (&$seen): void {
+            $seen[] = $f;
+        }]);
+        self::server()->expect(500, 'boom');
+
+        self::assertFalse($client->consent->revoke(['userId' => 'u1']));
+        self::assertCount(1, $seen);
+        self::assertSame('terminal', $seen[0]->kind);
+        self::assertSame(500, $seen[0]->status);
+        self::assertSame(1, $seen[0]->eventCount);
+        self::assertSame([], $seen[0]->eventIds, 'a consent record carries no eventId');
+        self::assertTrue($this->logger->has('error', 'dropping 1 event(s)'));
+    }
+
+    public function testANeverReachedConsentGrantReturnsFalseAsDropped(): void
+    {
+        $seen = [];
+        $client = $this->client([
+            'host' => '127.0.0.1:1',
+            'onDeliveryFailure' => static function (DeliveryFailure $f) use (&$seen): void {
+                $seen[] = $f;
+            },
+        ]);
+
+        self::assertFalse($client->consent->grant(['userId' => 'u1']));
+        self::assertCount(1, $seen);
+        self::assertSame('dropped', $seen[0]->kind);
+        self::assertTrue($this->logger->has('error', 'server not reached'));
+    }
+
+    public function testAnAnsweredConsentReturnsTrue(): void
+    {
+        $client = $this->client();
+        self::server()->expect(200);
+        self::server()->expect(200);
+
+        self::assertTrue($client->consent->grant(['userId' => 'u1']));
+        self::assertTrue($client->consent->revoke(['userId' => 'u1']));
+    }
+
     public function testAListenerThatThrowsIsCaughtAndLogged(): void
     {
         $client = $this->client(['onDeliveryFailure' => static function (): void {

@@ -19,6 +19,16 @@
   `eventCount`, `eventIds`, `retryAfter`, `terminal`); a listener that throws is
   logged and ignored. `flush()` and `close()` return `['sent' => int, 'failed' => int]`.
   Caller mistakes still throw `IntemptConfigException`; `recommend()` still throws.
+- **BREAKING: `consent->grant()` and `consent->revoke()` return `bool`** (was `void`;
+  ruling R2). A delivery failure returns `false`, logs at error level and fires
+  `onDeliveryFailure` once; it is never thrown and never silent. A never-reached consent
+  request is dropped and reported `dropped`, as in direct mode.
+- **BREAKING: a never-reached batch waits `flushMs` before the next width-triggered send,
+  and a full queue drops the oldest event** (ruling R4). `flushMs` was accepted and ignored;
+  it is now the wait after a kept batch, during which `track()` starts no network attempt.
+  An explicit `flush()`, `close()` or the exit hook still tries at once. At `maxQueue` the
+  oldest waiting event is dropped and reported `dropped` and the new one is queued
+  (`track()` returns `true`); previously the new event was dropped.
 
 ### Added
 
