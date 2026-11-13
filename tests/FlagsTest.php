@@ -65,7 +65,7 @@ final class FlagsTest extends TestCase
     {
         // The single most load-bearing field in this file. ExperienceRequest splices it into the
         // serving SQL as a raw predicate: null -> "0", which matches nothing forever; ALL -> "1".
-        // Deleting `'device' => 'all'` from chooseOrEmpty() must turn this red.
+        // Deleting `'device' => 'all'` from choose() must turn this red.
         $this->expectChoices([]);
         $this->client()->variation('checkout_v2', $this->context(), 'x');
 
@@ -138,7 +138,7 @@ final class FlagsTest extends TestCase
     {
         // An account-only identification satisfies neither branch of
         // ExperienceChooserService.buildAudienceRequest, so the service throws before evaluating
-        // anything - and chooseOrEmpty()'s catch absorbs that, handing the caller their default for
+        // anything - and choose()'s catch absorbs that, handing the caller their default for
         // every flag, forever, behind one WARN line. The parameter is removed rather than ignored;
         // re-adding it turns this red.
         $this->expectException(\Error::class);
@@ -151,7 +151,7 @@ final class FlagsTest extends TestCase
     // Removing `accountId` closed the one DOCUMENTED way to build a context the service cannot
     // answer. It did not close the others, and the others were reachable through the ordinary
     // constructor: `new FlagContext()`, a blank userId, or a profileId on a client configured
-    // without a sourceId. All three reach buildAudienceRequest, which throws; chooseOrEmpty()
+    // without a sourceId. All three reach buildAudienceRequest, which throws; choose()
     // absorbs that; and the caller reads their default for every key forever behind one WARN line,
     // with an integration that looks healthy. Measured against a live host before this guard
     // existed: all three returned the default and raised nothing.
@@ -210,7 +210,7 @@ final class FlagsTest extends TestCase
 
     public function testAllFlagsRefusesAnUnanswerableContextToo(): void
     {
-        // The second entry point into chooseOrEmpty(). Guarding only variation() would leave the
+        // The second entry point into choose(). Guarding only variation() would leave the
         // enumeration path defaulting silently.
         $this->expectException(IntemptConfigException::class);
         $this->client()->allFlags(new FlagContext());

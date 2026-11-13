@@ -1,12 +1,11 @@
 <?php
 
 /**
- * Batching and the retry policy.
+ * Batching and the delivery policy.
  *
  * Every assertion here pins a decision a rewrite could silently change: which
- * statuses retry, how many attempts the breaker allows, whether backoff grows,
- * whether a reduced width recovers. This is where every bug in the Node SDK
- * lived, so it gets the same depth here.
+ * statuses are resent, how many times, how long the wait is, and which
+ * failures keep the batch. The policy is CONTRACT-R2 §S1 (INT-7436).
  *
  * Copyright 2026 Intempt Technologies
  * Licensed under the Apache License, Version 2.0.
@@ -18,6 +17,7 @@ namespace Intempt\Tests;
 
 use Intempt\BatchOptions;
 use Intempt\Buffer;
+use Intempt\Delivery;
 use Intempt\IntemptApiException;
 
 final class BufferTest extends TestCase
@@ -44,18 +44,30 @@ final class BufferTest extends TestCase
         );
     }
 
+    /** @var list<int> */
+    private array $sleeps = [];
+
+    /** Seconds, read by the buffer's injected clock. */
+    private float $now = 100.0;
+
     /** @param callable(list<array<string, mixed>>): void $send */
     private function buffer(
         callable $send,
         ?BatchOptions $options = null,
         float $closeBudget = 30.0,
     ): Buffer {
+        $this->sleeps = [];
+
         return new Buffer(
             $options ?? self::options(),
             50,
             $this->logger,
             $send,
-            $closeBudget
+            $closeBudget,
+            new Delivery($this->logger, sleep: function (int $ms): void {
+                $this->sleeps[] = $ms;
+            }),
+            fn (): float => $this->now,
         );
     }
 
@@ -124,269 +136,356 @@ final class BufferTest extends TestCase
         );
     }
 
-    // -- retry policy -----------------------------------------------------
+    // -- delivery policy (INT-7436, CONTRACT-R2 §S1) ----------------------
 
-    public function test413HalvesTheWidthThenSucceeds(): void
+    /** @return callable(list<array<string, mixed>>): void */
+    private static function counting(int &$attempts, \Throwable ...$failures): callable
     {
-        $widths = [];
-        $rejectWide = true;
-        $buffer = $this->buffer(
-            static function (array $events) use (&$widths, &$rejectWide): void {
-                $widths[] = count($events);
-                if ($rejectWide && count($events) > 2) {
-                    throw new IntemptApiException('too large', status: 413, body: '');
-                }
-            },
-            self::options(size: 4, maxQueue: 50)
+        return static function (array $events) use (&$attempts, $failures): void {
+            $failure = $failures[$attempts] ?? null;
+            ++$attempts;
+            if ($failure !== null) {
+                throw $failure;
+            }
+        };
+    }
+
+    private static function answered(int $status, ?int $retryAfterMs = null): IntemptApiException
+    {
+        return new IntemptApiException(
+            "Intempt API responded $status",
+            status: $status,
+            body: '',
+            retryAfterMs: $retryAfterMs
         );
+    }
+
+    /** @return array<string, array{0: int}> */
+    public static function dropStatuses(): array
+    {
+        return [
+            '400' => [400], '401' => [401], '404' => [404], '408' => [408], '413' => [413],
+            '500' => [500], '502' => [502], '504' => [504],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('dropStatuses')]
+    public function testEveryOtherAnsweredStatusIsSentOnceAndDropped(int $status): void
+    {
+        $attempts = 0;
+        $buffer = $this->buffer(self::counting($attempts, self::answered($status)));
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+        $buffer->flush();
+
+        self::assertSame(1, $attempts);
+        self::assertSame(0, $buffer->size());
+        self::assertSame([], $this->sleeps);
+        self::assertTrue($this->logger->has('error', 'dropping 2 event(s)'));
+    }
+
+    public function test413DropsTheWholeBatchWithoutSplitting(): void
+    {
+        $attempts = 0;
+        $buffer = $this->buffer(self::counting($attempts, self::answered(413)));
         for ($i = 0; $i < 4; ++$i) {
             $buffer->enqueue(self::event("e$i"));
         }
         $buffer->flush();
 
-        self::assertSame(4, $widths[0]);
-        self::assertSame(2, max(array_slice($widths, 1)));
+        self::assertSame(1, $attempts);
         self::assertSame(0, $buffer->size());
-        self::assertTrue($this->logger->has('warning', 'reducing batch size to 2'));
     }
 
-    public function test413OnASingleEventDropsIt(): void
+    public function testATimeoutAfterTheRequestWasWrittenIsNotResent(): void
     {
-        $buffer = $this->buffer(self::failing(413), self::options(size: 2, maxQueue: 10));
+        $attempts = 0;
+        $buffer = $this->buffer(
+            self::counting($attempts, new IntemptApiException('request timed out', timedOut: true))
+        );
+        $buffer->enqueue(self::event('a'));
+        $buffer->flush();
+
+        self::assertSame(1, $attempts);
+        self::assertSame(0, $buffer->size());
+        self::assertSame([], $this->sleeps);
+    }
+
+    /** @return array<string, array{0: int}> */
+    public static function resendStatuses(): array
+    {
+        return ['429' => [429], '503' => [503]];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('resendStatuses')]
+    public function testA503Or429IsResentExactlyOnceThenDropped(int $status): void
+    {
+        $attempts = 0;
+        $buffer = $this->buffer(
+            self::counting($attempts, self::answered($status), self::answered($status), self::answered($status))
+        );
+        $buffer->enqueue(self::event('a'));
+        $buffer->flush();
+
+        self::assertSame(2, $attempts);
+        self::assertSame(0, $buffer->size());
+        self::assertSame([1000], $this->sleeps, 'no Retry-After waits 1 s');
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('resendStatuses')]
+    public function testTheOneResendCanSucceed(int $status): void
+    {
+        $attempts = 0;
+        $buffer = $this->buffer(self::counting($attempts, self::answered($status, 2_000)));
+        $buffer->enqueue(self::event('a'));
+        $buffer->flush();
+
+        self::assertSame(2, $attempts);
+        self::assertSame(0, $buffer->size());
+        self::assertSame([2000], $this->sleeps, 'Retry-After is honoured');
+        self::assertFalse($this->logger->has('error', 'dropping'));
+    }
+
+    public function testAZeroRetryAfterWaitsTheOneSecondFloor(): void
+    {
+        $attempts = 0;
+        $buffer = $this->buffer(self::counting($attempts, self::answered(503, 0)));
+        $buffer->enqueue(self::event('a'));
+        $buffer->flush();
+
+        self::assertSame([1000], $this->sleeps);
+    }
+
+    public function testAWaitOfExactlyTheFiveSecondCapStillResends(): void
+    {
+        $attempts = 0;
+        $buffer = $this->buffer(self::counting($attempts, self::answered(503, 5_000)));
+        $buffer->enqueue(self::event('a'));
+        $buffer->flush();
+
+        self::assertSame(2, $attempts);
+        self::assertSame([5000], $this->sleeps);
+    }
+
+    public function testAWaitPastTheFiveSecondCapDropsWithoutSleeping(): void
+    {
+        // A server SDK sleeps inline, inside the caller's request (CONTRACT-R2 §S1.2).
+        $attempts = 0;
+        $buffer = $this->buffer(self::counting($attempts, self::answered(429, 5_001)));
+        $buffer->enqueue(self::event('a'));
+        $buffer->flush();
+
+        self::assertSame(1, $attempts);
+        self::assertSame([], $this->sleeps);
+        self::assertSame(0, $buffer->size());
+        self::assertTrue($this->logger->has('error', 'dropping 1 event(s)'));
+    }
+
+    public function testANeverReachedBatchIsKeptForTheNextFlush(): void
+    {
+        $attempts = 0;
+        $buffer = $this->buffer(
+            self::counting($attempts, new IntemptApiException('connection refused', unreached: true))
+        );
         $buffer->enqueue(self::event('a'));
         $buffer->enqueue(self::event('b'));
         $buffer->flush();
 
+        self::assertSame(1, $attempts, 'kept, not looped on');
+        self::assertSame(2, $buffer->size());
+        self::assertSame([], $this->sleeps);
+
+        $buffer->flush();
+        self::assertSame(2, $attempts);
         self::assertSame(0, $buffer->size());
-        self::assertTrue($this->logger->has('error', 'single event too large'));
     }
 
-    public function test429HonoursRetryAfter(): void
+    public function testADropDoesNotStopTheBatchesBehindIt(): void
     {
-        $attempts = 0;
+        $delivered = [];
         $buffer = $this->buffer(
-            static function (array $events) use (&$attempts): void {
-                ++$attempts;
-                if ($attempts === 1) {
-                    throw new IntemptApiException(
-                        'slow down',
-                        status: 429,
-                        body: '',
-                        retryAfterMs: 200
-                    );
+            static function (array $events) use (&$delivered): void {
+                if ($events[0]['name'] === 'e0') {
+                    throw self::answered(500);
+                }
+                foreach ($events as $event) {
+                    $delivered[] = $event['name'];
                 }
             },
-            self::options(size: 1, flushMs: 10, maxQueue: 10)
+            self::options(size: 2, maxQueue: 100)
         );
-        $started = microtime(true);
-        $buffer->enqueue(self::event('a'));
-        $buffer->flush();
+        for ($i = 0; $i < 6; ++$i) {
+            $buffer->enqueue(self::event("e$i"));
+        }
 
-        self::assertTrue($this->logger->has('warning', 'retrying in 200ms'));
-        self::assertGreaterThanOrEqual(0.18, microtime(true) - $started);
-    }
-
-    public function testAZeroRetryAfterIsFlooredRatherThanRetriedInstantly(): void
-    {
-        $attempts = 0;
-        $buffer = $this->buffer(
-            static function (array $events) use (&$attempts): void {
-                ++$attempts;
-                if ($attempts === 1) {
-                    throw new IntemptApiException('x', status: 429, body: '', retryAfterMs: 0);
-                }
-            },
-            self::options(size: 1, flushMs: 10, maxQueue: 10)
-        );
-        $buffer->enqueue(self::event('a'));
-        $buffer->flush();
-
-        $waits = $this->waits();
-        self::assertNotEmpty($waits);
-        self::assertGreaterThanOrEqual(100, $waits[0]);
-    }
-
-    public function testANonRetryableStatusDropsTheBatch(): void
-    {
-        $buffer = $this->buffer(self::failing(400), self::options(size: 1, maxQueue: 10));
-        $buffer->enqueue(self::event('a'));
-        $buffer->flush();
-
+        self::assertSame(['e2', 'e3', 'e4', 'e5'], $delivered);
         self::assertSame(0, $buffer->size());
-        self::assertTrue($this->logger->has('error', 'non-retryable error; dropping batch'));
     }
 
-    public function testBreakerOpensAfterExactlyFiveAttempts(): void
+    // -- a kept batch waits for the flush interval (ruling R4) ------------
+
+    private function offlineThenUp(int &$attempts, int $offline): Buffer
     {
-        // Five, not four and not six.
-        $attempts = 0;
-        $buffer = $this->buffer(
-            static function (array $events) use (&$attempts): void {
-                ++$attempts;
+        $failures = array_fill(0, $offline, new IntemptApiException('connection refused', unreached: true));
 
-                throw new IntemptApiException('boom', status: 500, body: '');
-            },
-            self::options(size: 1, flushMs: 1, maxQueue: 10)
+        return $this->buffer(
+            self::counting($attempts, ...$failures),
+            self::options(size: 2, flushMs: 1_000, maxQueue: 100)
         );
-        $buffer->enqueue(self::event('a'));
-        $buffer->flush();
+    }
 
+    public function testEnqueueStartsNoAttemptWhileAKeptBatchWaits(): void
+    {
+        $attempts = 0;
+        $buffer = $this->offlineThenUp($attempts, 1);
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+        self::assertSame(1, $attempts);
+
+        $this->now = 100.999;
+        for ($i = 0; $i < 6; ++$i) {
+            $buffer->enqueue(self::event("e$i"));
+        }
+
+        self::assertSame(1, $attempts, 'a host that is down must not be hit on every track()');
+        self::assertSame(8, $buffer->size());
+    }
+
+    public function testTheFirstWidthTriggerAtTheFlushIntervalMakesTheNextAttempt(): void
+    {
+        $attempts = 0;
+        $buffer = $this->offlineThenUp($attempts, 1);
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+
+        $this->now = 101.0;
+        $buffer->enqueue(self::event('c'));
+
+        self::assertSame(3, $attempts, 'exactly one flush interval after the kept attempt');
+        self::assertSame(0, $buffer->size(), 'the run drains the queue, partial tail included');
+    }
+
+    public function testBelowTheWidthNothingIsSentEvenAfterTheInterval(): void
+    {
+        $attempts = 0;
+        $buffer = $this->offlineThenUp($attempts, 1);
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+        $buffer->flush();
+        self::assertSame(2, $attempts);
+
+        $this->now = 200.0;
+        $buffer->enqueue(self::event('c'));
+
+        self::assertSame(2, $attempts);
+        self::assertSame(1, $buffer->size());
+    }
+
+    public function testAnExplicitFlushRetriesInsideTheInterval(): void
+    {
+        $attempts = 0;
+        $buffer = $this->offlineThenUp($attempts, 1);
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+
+        $this->now = 100.001;
+        $result = $buffer->flush();
+
+        self::assertSame(2, $attempts);
+        self::assertSame(['sent' => 2, 'failed' => 0], $result);
+    }
+
+    public function testAnotherKeptAttemptRestartsTheInterval(): void
+    {
+        $attempts = 0;
+        $buffer = $this->offlineThenUp($attempts, 2);
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+
+        $this->now = 101.0;
+        $buffer->enqueue(self::event('c'));
+        self::assertSame(2, $attempts);
+
+        $this->now = 101.999;
+        $buffer->enqueue(self::event('d'));
+        self::assertSame(2, $attempts, 'the interval counts from the latest kept attempt');
+
+        $this->now = 102.0;
+        $buffer->enqueue(self::event('e'));
         self::assertSame(5, $attempts);
-        self::assertTrue($this->logger->has('error', '5 consecutive failures; stopping batching'));
+        self::assertSame(0, $buffer->size());
     }
 
-    public function testTheStopMessageSaysHowManyAreStranded(): void
+    public function testASettledFlushEndsTheWait(): void
     {
-        $buffer = $this->buffer(self::failing(500), self::options(size: 1, flushMs: 1, maxQueue: 10));
+        $attempts = 0;
+        $buffer = $this->offlineThenUp($attempts, 1);
         $buffer->enqueue(self::event('a'));
         $buffer->enqueue(self::event('b'));
+        $this->now = 100.1;
         $buffer->flush();
 
-        $stop = $this->logger->matching('error', 'stopping batching');
-        self::assertNotEmpty($stop);
-        self::assertStringContainsString('event(s) remain buffered', $stop[0]);
-    }
+        $this->now = 100.2;
+        $buffer->enqueue(self::event('c'));
+        $buffer->enqueue(self::event('d'));
 
-    public function testBackoffDoublesRatherThanShrinking(): void
-    {
-        $buffer = $this->buffer(self::failing(500), self::options(size: 1, flushMs: 60, maxQueue: 10));
-        $buffer->enqueue(self::event('a'));
-        $buffer->flush();
-
-        self::assertSame([120, 240, 480], array_slice($this->waits(), 0, 3));
-    }
-
-    public function testADroppedBatchDoesNotCountTowardTheBreaker(): void
-    {
-        // One 400 after four 500s must not stop batching on the next blip.
-        $buffer = $this->buffer(self::failing(400), self::options(size: 1, flushMs: 1, maxQueue: 20));
-        for ($i = 0; $i < 8; ++$i) {
-            $buffer->enqueue(self::event("e$i"));
-        }
-        $buffer->flush();
-
+        self::assertSame(3, $attempts, 'the width trigger is live again once the host answered');
         self::assertSame(0, $buffer->size());
-        self::assertFalse($this->logger->has('error', 'stopping batching'));
     }
 
-    // -- width recovery ---------------------------------------------------
-
-    public function testAReducedWidthWidensAgainAfterARunOfSuccesses(): void
+    public function testAFullQueueDropsTheOldestEventWhileABatchIsKept(): void
     {
-        $widths = [];
-        $rejectWide = true;
-        $buffer = $this->buffer(
-            static function (array $events) use (&$widths, &$rejectWide): void {
-                $widths[] = count($events);
-                if ($rejectWide && count($events) > 2) {
-                    throw new IntemptApiException('too large', status: 413, body: '');
-                }
-            },
-            self::options(size: 4, maxQueue: 500)
-        );
-        for ($i = 0; $i < 4; ++$i) {
-            $buffer->enqueue(self::event("a$i"));
-        }
-        $buffer->flush();
-        self::assertSame(4, $widths[0]);
-
-        $rejectWide = false;
-        $before = count($widths);
-        for ($i = 0; $i < 48; ++$i) {
-            $buffer->enqueue(self::event("b$i"));
-        }
-        $buffer->flush();
-
-        self::assertSame(
-            4,
-            max(array_slice($widths, $before)),
-            'the width must recover, not stay halved for the life of the client'
-        );
-    }
-
-    public function testWideningIgnoresSendsNarrowerThanTheCurrentWidth(): void
-    {
-        $widths = [];
-        $rejectWide = true;
-        $buffer = $this->buffer(
-            static function (array $events) use (&$widths, &$rejectWide): void {
-                $widths[] = count($events);
-                if ($rejectWide && count($events) > 2) {
-                    throw new IntemptApiException('too large', status: 413, body: '');
-                }
-            },
-            self::options(size: 4, maxQueue: 500)
-        );
-        for ($i = 0; $i < 4; ++$i) {
-            $buffer->enqueue(self::event("a$i"));
-        }
-        $buffer->flush();
-        $rejectWide = false;
-
-        $before = count($widths);
-        for ($i = 0; $i < 20; ++$i) {
-            $buffer->enqueue(self::event("b$i"));
-            $buffer->flush();
-        }
-
-        self::assertSame([1], array_values(array_unique(array_slice($widths, $before))));
-    }
-
-    // -- drop diagnostics -------------------------------------------------
-
-    public function testAGatewayRejectingEverythingKeepsDraining(): void
-    {
-        // It must not stop: stopping strands the queue and every later event.
-        $buffer = $this->buffer(self::failing(413), self::options(size: 8, maxQueue: 100));
-        for ($i = 0; $i < 10; ++$i) {
-            $buffer->enqueue(self::event("e$i"));
-        }
-        $buffer->flush();
-
-        self::assertSame(0, $buffer->size());
-        self::assertFalse($this->logger->has('error', 'stopping batching'));
-    }
-
-    public function testSaysOnceThatTheGatewayLimitIsALikelyCause(): void
-    {
-        $buffer = $this->buffer(self::failing(413), self::options(size: 4, maxQueue: 100));
-        for ($i = 0; $i < 8; ++$i) {
-            $buffer->enqueue(self::event("e$i"));
-        }
-        $buffer->flush();
-
-        self::assertCount(
-            1,
-            $this->logger->matching('error', 'rejected as too large with none accepted in between')
-        );
-    }
-
-    public function testABurstOfOversizedEventsDoesNotPunishTheGoodOnes(): void
-    {
-        // The regression a drop-breaker caused on Node: everything stranded.
-        $big = ['big0', 'big1', 'big2', 'big3', 'big4', 'big5'];
         $sent = [];
+        $up = false;
         $buffer = $this->buffer(
-            static function (array $events) use (&$sent, $big): void {
-                $names = array_column($events, 'name');
-                if (array_intersect($names, $big) !== []) {
-                    throw new IntemptApiException('too large', status: 413, body: '');
+            static function (array $events) use (&$sent, &$up): void {
+                if (!$up) {
+                    throw new IntemptApiException('connection refused', unreached: true);
                 }
-                $sent = array_merge($sent, $names);
+                foreach ($events as $event) {
+                    $sent[] = $event['name'];
+                }
             },
-            self::options(size: 8, maxQueue: 200)
+            self::options(size: 2, flushMs: 1_000, maxQueue: 3)
         );
-        foreach ($big as $name) {
-            $buffer->enqueue(self::event($name));
-        }
-        for ($i = 0; $i < 20; ++$i) {
-            $buffer->enqueue(self::event("good$i"));
-        }
-        $buffer->flush();
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+        $buffer->enqueue(self::event('c'));
 
-        $good = array_filter($sent, static fn (string $n) => str_starts_with($n, 'good'));
-        self::assertCount(20, $good);
+        self::assertTrue($buffer->enqueue(self::event('d')), 'the new event was queued');
+        self::assertSame(3, $buffer->size());
+        self::assertTrue($this->logger->has('error', 'batch queue full; oldest event dropped'));
+        self::assertSame(['name' => 'a', 'maxQueue' => 3], $this->logger->context['error'][0]);
+
+        $up = true;
+        $buffer->flush();
+        self::assertSame(['b', 'c', 'd'], $sent);
+    }
+
+    public function testAWriteDuringASendNeitherResendsNorEvictsTheInFlightBatch(): void
+    {
+        // The onDeliveryFailure listener and the send callback both run while the batch is still
+        // at the head of the queue, so a track() from either must not start a second send of that
+        // batch, and an eviction must not shift what the post-send splice removes.
+        $sent = [];
+        $buffer = null;
+        $buffer = $this->buffer(
+            static function (array $events) use (&$sent, &$buffer): void {
+                $sent[] = array_column($events, 'name');
+                if (count($sent) === 1) {
+                    $buffer->enqueue(self::event('c'));
+                    $buffer->flush();
+                    $buffer->enqueue(self::event('d'));
+                }
+            },
+            self::options(size: 2, flushMs: 1_000, maxQueue: 3)
+        );
+        $buffer->enqueue(self::event('a'));
+        $buffer->enqueue(self::event('b'));
+
+        self::assertSame([['a', 'b'], ['d']], $sent, 'a, b once; c evicted; d sent by the outer run');
         self::assertSame(0, $buffer->size());
+        self::assertSame(['name' => 'c', 'maxQueue' => 3], $this->logger->context['error'][0]);
     }
 
     // -- close budget -----------------------------------------------------
@@ -401,9 +500,29 @@ final class BufferTest extends TestCase
         self::assertLessThan(3.0, microtime(true) - $started);
     }
 
+    public function testCloseDropsRatherThanStartAResendWaitPastItsDeadline(): void
+    {
+        // Inside the 5 s cap, so only the close deadline can stop this wait.
+        $attempts = 0;
+        $buffer = $this->buffer(self::counting($attempts, self::answered(503, 2_000)), self::options(), 0.12);
+        $buffer->enqueue(self::event('a'));
+        $buffer->close();
+
+        self::assertSame(1, $attempts);
+        self::assertSame([], $this->sleeps);
+        self::assertSame(0, $buffer->size());
+        self::assertTrue($this->logger->has('error', 'dropping 1 event(s)'));
+    }
+
     public function testCloseSaysHowManyItAbandoned(): void
     {
-        $buffer = $this->buffer(self::failing(500), self::options(), 0.12);
+        $buffer = $this->buffer(
+            static function (array $events): void {
+                throw new IntemptApiException('connection refused', unreached: true);
+            },
+            self::options(),
+            0.12
+        );
         for ($i = 0; $i < 4; ++$i) {
             $buffer->enqueue(self::event("e$i"));
         }
@@ -470,19 +589,14 @@ final class BufferTest extends TestCase
         // Only close() gives up. A caller mid-request has not asked to.
         $attempts = 0;
         $buffer = $this->buffer(
-            static function (array $events) use (&$attempts): void {
-                ++$attempts;
-                if ($attempts < 3) {
-                    throw new IntemptApiException('boom', status: 500, body: '');
-                }
-            },
+            self::counting($attempts, self::answered(503)),
             self::options(flushMs: 1),
             0.001
         );
         $buffer->enqueue(self::event('a'));
         $buffer->flush();
 
-        self::assertSame(3, $attempts);
+        self::assertSame(2, $attempts);
         self::assertSame(0, $buffer->size());
     }
 
@@ -518,18 +632,5 @@ final class BufferTest extends TestCase
             }
         }
         self::assertSame(['after'], $names);
-    }
-
-    /** @return list<int> */
-    private function waits(): array
-    {
-        $waits = [];
-        foreach ($this->logger->matching('warning', 'retrying in') as $line) {
-            if (preg_match('/retrying in (\d+)ms/', $line, $match) === 1) {
-                $waits[] = (int) $match[1];
-            }
-        }
-
-        return $waits;
     }
 }

@@ -205,8 +205,8 @@ try {
 
     reply(404, ['error' => 'no such route']);
 } catch (IntemptApiException $exception) {
-    // Every method throws. Nothing is swallowed, so a real app decides here
-    // whether the failure should reach the customer.
+    // recommend() throws; tracking writes report delivery problems through
+    // onDeliveryFailure instead, so a real app decides here only for reads.
     error_log('intempt rejected the write: ' . $exception->getMessage());
     reply(502, ['error' => 'analytics write failed']);
 } catch (IntemptConfigException $exception) {

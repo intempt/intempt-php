@@ -211,6 +211,8 @@ final class TransportTest extends TestCase
             self::assertStringContainsString('0.1s', $error->getMessage());
             self::assertNull($error->status, 'a timeout has no status');
             self::assertTrue($error->isRetryable(), 'nothing came back to say it was rejected');
+            self::assertTrue($error->timedOut);
+            self::assertFalse($error->unreached, 'the request was written, so it may have landed');
         }
     }
 
@@ -234,6 +236,8 @@ final class TransportTest extends TestCase
             self::assertNull($error->status);
             self::assertTrue($error->isRetryable());
             self::assertNotSame('', $error->getMessage());
+            self::assertTrue($error->unreached, 'refused before any byte was sent');
+            self::assertFalse($error->timedOut);
         }
     }
 

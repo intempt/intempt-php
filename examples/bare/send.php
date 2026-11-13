@@ -24,6 +24,7 @@
 
 declare(strict_types=1);
 
+use Intempt\DeliveryFailure;
 use Intempt\FlagContext;
 use Intempt\Intempt;
 use Intempt\IntemptApiException;
@@ -69,6 +70,10 @@ $userId = getenv('INTEMPT_USER_ID') ?: 'bare-sample@example.com';
 // No `batch` here on purpose: under PHP-FPM a process handles one request and
 // dies, so an in-memory buffer has nowhere to live. Turn batching on only in a
 // worker or queue consumer.
+// Delivery problems are reported, never thrown: track() returns false and this
+// listener hears the batch's final outcome once. Keep it cheap and non-throwing.
+$failed = null;
+
 try {
     $intempt = new Intempt([
         'org' => getenv('INTEMPT_ORG'),
@@ -77,6 +82,9 @@ try {
         'sourceId' => getenv('INTEMPT_SOURCE_ID') ?: null,
         'host' => getenv('INTEMPT_HOST') ?: 'api.intempt.com',
         'scheme' => getenv('INTEMPT_SCHEME') ?: 'https',
+        'onDeliveryFailure' => static function (DeliveryFailure $failure) use (&$failed): void {
+            $failed ??= $failure;
+        },
     ]);
 } catch (IntemptConfigException $error) {
     fwrite(STDERR, 'bad arguments: ' . $error->getMessage() . PHP_EOL);
@@ -139,10 +147,10 @@ try {
     $limits = $intempt->jsonVariation('rate_limits', $context, ['perMinute' => 60]);
     echo 'jsonVariation -> ' . json_encode($limits) . PHP_EOL;
 
-    // allFlags is for enumerating, not for a request path: it makes the service
-    // evaluate every running Server experience, and every evaluation reports an
-    // exposure — including for keys this code never reads. Two keys means two
-    // variation() calls, not one allFlags(). See docs/CONVENTIONS.md.
+    // allFlags evaluates without recording exposures; variation() is what records
+    // one. On a backend that predates INT-7456 every evaluation still reports an
+    // exposure, so prefer two variation() calls on a request path. See
+    // docs/CONVENTIONS.md.
     $flags = $intempt->allFlags($context);
     echo 'allFlags   -> ' . count($flags) . ' key(s): '
         . (implode(', ', array_keys($flags)) ?: '(none)') . PHP_EOL;
@@ -168,21 +176,22 @@ try {
     fwrite(STDERR, 'bad arguments: ' . $error->getMessage() . PHP_EOL);
     $intempt->close();
     exit(2);
-} catch (IntemptApiException $error) {
-    fwrite(
-        STDERR,
-        sprintf(
-            'API error: status=%s retryable=%s%s',
-            $error->status === null ? 'none' : (string) $error->status,
-            $error->isRetryable() ? 'true' : 'false',
-            PHP_EOL
-        )
-    );
-    fwrite(STDERR, 'body: ' . (string) $error->body . PHP_EOL);
-    $intempt->close();
-    exit(1);
 }
 
 $intempt->close();
+
+if ($failed !== null) {
+    fwrite(
+        STDERR,
+        sprintf(
+            'delivery failed: status=%s kind=%s events=%d%s',
+            $failed->status === null ? 'none' : (string) $failed->status,
+            $failed->kind,
+            $failed->eventCount,
+            PHP_EOL
+        )
+    );
+    exit(1);
+}
 
 printf('sent. look for user id "%s" in Sources -> Live events.%s', $userId, PHP_EOL);

@@ -15,8 +15,9 @@ final class Intempt
 {
     /** A response the service did not answer is reported as such rather than guessed at. */
     private const UNANSWERED = 'off';
+    private const ERRORED = 'error';
 
-    public const VERSION = '2.1.0';
+    public const VERSION = '3.0.0';
 
     /** Reserved event name the platform interprets as an identity write. */
     public const IDENTIFY_EVENT = 'Identify';
@@ -37,14 +38,20 @@ final class Intempt
     private Config $config;
     private readonly Transport $transport;
     private ?Buffer $buffer = null;
+    private readonly Delivery $delivery;
     private bool $optedIn = true;
     private bool $closed = false;
+    private bool $authFailureLogged = false;
 
     /** @param array<string, mixed> $options */
     public function __construct(array $options)
     {
         $this->config = Config::resolve($options);
         $this->transport = new Transport($this->config, $this->config->credentials);
+        $this->delivery = new Delivery(
+            $this->config->logger(),
+            onFailure: $this->config->onDeliveryFailure,
+        );
 
         if ($this->config->batch !== null) {
             $this->buffer = new Buffer(
@@ -52,6 +59,7 @@ final class Intempt
                 $this->config->maxRequestEvents,
                 $this->config->logger(),
                 fn (array $events) => $this->send($events),
+                delivery: $this->delivery,
             );
         }
 
@@ -61,23 +69,32 @@ final class Intempt
 
     // -- data in ----------------------------------------------------------
 
-    /** @param array<string, mixed> $options */
-    public function track(string $event, array $options = []): void
+    /**
+     * True when the event was accepted: queued in batch mode, answered 2xx in direct mode. False
+     * when opted out or when delivery failed; the failure itself reaches `onDeliveryFailure`.
+     * Throws only for a caller mistake (bad name, no identifier, closed client).
+     *
+     * @param array<string, mixed> $options
+     */
+    public function track(string $event, array $options = []): bool
     {
         $this->assertEventName($event, 'track');
         Validate::identifier($options, 'track');
-        $this->submit([$this->buildEvent($event, $options)]);
+
+        return $this->submit([$this->buildEvent($event, $options)]);
     }
 
     /**
      * Send many events, chunked so one oversized call is not one oversized request.
      *
+     * True when every event was accepted, as for track().
+     *
      * @param list<array<string, mixed>> $events
      */
-    public function trackBatch(array $events): void
+    public function trackBatch(array $events): bool
     {
         if ($events === []) {
-            return;
+            return true;
         }
 
         $wire = [];
@@ -95,36 +112,39 @@ final class Intempt
         }
 
         if ($this->buffer !== null || !$this->isOptedIn()) {
-            $this->submit($wire);
-
-            return;
+            return $this->submit($wire);
         }
 
+        $accepted = true;
         foreach (Validate::chunk($wire, $this->config->maxRequestEvents) as $group) {
-            $this->send($group);
+            $accepted = $this->deliverNow($group) && $accepted;
         }
+
+        return $accepted;
     }
 
     /** @param array<string, mixed> $options */
-    public function identify(array $options): void
+    public function identify(array $options): bool
     {
         Validate::identifier($options, 'identify');
         $event = $options['event'] ?? null;
         $traits = $options['traits'] ?? null;
         unset($options['event'], $options['traits']);
         $options['userAttributes'] = $traits;
-        $this->submit([$this->buildEvent($this->reservedName($event, 'identify'), $options)]);
+
+        return $this->submit([$this->buildEvent($this->reservedName($event, 'identify'), $options)]);
     }
 
     /** @param array<string, mixed> $options */
-    public function group(array $options): void
+    public function group(array $options): bool
     {
         Validate::nonBlank($options['accountId'] ?? null, 'group', 'accountId');
         $event = $options['event'] ?? null;
         $attributes = $options['attributes'] ?? null;
         unset($options['event'], $options['attributes']);
         $options['accountAttributes'] = $attributes;
-        $this->submit([$this->buildEvent($this->reservedName($event, 'group'), $options)]);
+
+        return $this->submit([$this->buildEvent($this->reservedName($event, 'group'), $options)]);
     }
 
     // -- decisions out ----------------------------------------------------
@@ -190,44 +210,48 @@ final class Intempt
      * on mode. The older surface put the mode in the method name, which forced a caller to know
      * which it was before reading it and grew combinatorially with every new mode.
      */
-    public function variation(string $key, FlagContext $context, mixed $defaultValue): mixed
-    {
-        return $this->variationDetailInternal($key, $context, $defaultValue)->value;
+    public function variation(
+        string $key,
+        FlagContext $context,
+        mixed $defaultValue,
+        bool $disableExposure = false,
+    ): mixed {
+        return $this->variationDetail($key, $context, $defaultValue, $disableExposure)->value;
     }
 
     /**
-     * Internal. NOT public, deliberately.
+     * The value, plus `reason: 'error'` and the FlagError when the call failed (INT-7454).
      *
-     * It returns a reason, and the platform does not send one: a held-back person's experience is
-     * absent from the evaluation response entirely rather than present with a cause. So every
-     * reason would read "off" -- including for someone who WAS targeted and did receive the
-     * variant. That is a wrong answer, not a missing one, and a method whose only job is
-     * explaining why must not guess.
+     * The service sends no reason (INT-7457): a held-back person's experience is absent from the
+     * response rather than present with a cause, so a served value and an unassigned key both read
+     * `off`. That is stated, not guessed. What this does distinguish is a failure, which used to be
+     * indistinguishable from "off".
      *
-     * variation() uses it for the value, which is correct either way. It becomes public when the
-     * serving contract carries a reason.
+     * Reading a key records the exposure. `$disableExposure` evaluates without recording it, for a
+     * pre-render or a prefetch whose value may never be shown (INT-7456).
      */
-    private function variationDetailInternal(
+    public function variationDetail(
         string $key,
         FlagContext $context,
-        mixed $defaultValue
+        mixed $defaultValue,
+        bool $disableExposure = false,
     ): FlagDetail {
         $this->assertOpen();
         Validate::flagKey($key, 'variation');
         $this->assertAnswerable($context, 'variation');
 
-        foreach ($this->chooseOrEmpty($context, [$key]) as $choice) {
+        [$choices, $error] = $this->choose($context, [$key], $key, !$disableExposure);
+        if ($error !== null) {
+            return new FlagDetail($defaultValue, self::ERRORED, $error);
+        }
+        foreach ($choices as $choice) {
             if (($choice['name'] ?? null) !== $key) {
                 continue;
             }
-            $body = $choice['body'] ?? null;
 
-            // The reason is NOT read off the wire. `grep -rni reason` across the service's
-            // experience package returns nothing and `ExperienceApiChoose` carries only
-            // name/group/body, so a `reason` key can only arrive from a fixture. Reading one would
-            // make this branch look live while being unreachable in production - and an unreachable
-            // branch is an unkillable mutant, which costs MSI headroom on a gate set at 85.
-            return new FlagDetail($body ?? $defaultValue, self::UNANSWERED);
+            // The reason is NOT read off the wire: `ExperienceApiChoose` carries only
+            // name/group/body, so a `reason` key can only arrive from a fixture (INT-7457).
+            return new FlagDetail($choice['body'] ?? $defaultValue, self::UNANSWERED);
         }
 
         return new FlagDetail($defaultValue, self::UNANSWERED);
@@ -236,16 +260,11 @@ final class Intempt
     /**
      * Every key assigned to this person, in one call.
      *
-     * **This is not a free read, and it is not a cheaper `variation()`.** Omitting `names` makes the
-     * service evaluate EVERY running Server experience, and every evaluation reports an exposure:
-     * `retrieveApiExperiences` -> `ChooserHelper.display` -> `publishEvent` -> Kafka. That is
-     * `EXP-SERVE-003` working as specified, not a defect, but the consequence here is specific: one
-     * call at request start enrols the caller in every running experiment, including keys this code
-     * never reads, inflating those denominators with people who were shown nothing.
-     *
-     * Use it to enumerate or to debug. For a request path that reads two keys, call `variation()`
-     * twice — that reports two exposures instead of all of them. There is no suppress flag on the
-     * endpoint today; see docs/CONVENTIONS.md.
+     * Evaluation only: the request carries `exposure: false`, so enumerating keys no longer enrols the
+     * caller in every running experiment (INT-7456). Reading a key with `variation()` is what records
+     * its exposure. Until audience-service honours the field it is ignored and every evaluation still
+     * reports an exposure (`ChooserHelper.display` -> `publishEvent`), so on such a backend this
+     * remains an enumerate-or-debug call, not a request-path read.
      *
      * @return array<string, mixed>
      */
@@ -254,7 +273,7 @@ final class Intempt
         $this->assertOpen();
         $this->assertAnswerable($context, 'allFlags');
         $out = [];
-        foreach ($this->chooseOrEmpty($context, null) as $choice) {
+        foreach ($this->choose($context, null, null, false)[0] as $choice) {
             $name = $choice['name'] ?? null;
             if (is_string($name) && $name !== '') {
                 $out[$name] = $choice['body'] ?? null;
@@ -264,18 +283,26 @@ final class Intempt
         return $out;
     }
 
-    public function boolVariation(string $key, FlagContext $context, bool $defaultValue): bool
-    {
-        $value = $this->variation($key, $context, $defaultValue);
+    public function boolVariation(
+        string $key,
+        FlagContext $context,
+        bool $defaultValue,
+        bool $disableExposure = false,
+    ): bool {
+        $value = $this->variation($key, $context, $defaultValue, $disableExposure);
 
         // A served value of the wrong type is a misconfiguration, not something to coerce:
         // (bool) 'false' is true, and a silent coercion is indistinguishable from a real answer.
         return is_bool($value) ? $value : $defaultValue;
     }
 
-    public function stringVariation(string $key, FlagContext $context, string $defaultValue): string
-    {
-        $value = $this->variation($key, $context, $defaultValue);
+    public function stringVariation(
+        string $key,
+        FlagContext $context,
+        string $defaultValue,
+        bool $disableExposure = false,
+    ): string {
+        $value = $this->variation($key, $context, $defaultValue, $disableExposure);
 
         return is_string($value) ? $value : $defaultValue;
     }
@@ -283,9 +310,10 @@ final class Intempt
     public function numberVariation(
         string $key,
         FlagContext $context,
-        int|float $defaultValue
+        int|float $defaultValue,
+        bool $disableExposure = false,
     ): int|float {
-        $value = $this->variation($key, $context, $defaultValue);
+        $value = $this->variation($key, $context, $defaultValue, $disableExposure);
 
         // is_numeric() would accept the STRING '42', so the check is on type, not value.
         // No bool guard is needed here: unlike Python, PHP's is_int() is false for true.
@@ -302,9 +330,13 @@ final class Intempt
      * @param array<array-key, mixed> $defaultValue
      * @return array<array-key, mixed>
      */
-    public function jsonVariation(string $key, FlagContext $context, array $defaultValue): array
-    {
-        $value = $this->variation($key, $context, $defaultValue);
+    public function jsonVariation(
+        string $key,
+        FlagContext $context,
+        array $defaultValue,
+        bool $disableExposure = false,
+    ): array {
+        $value = $this->variation($key, $context, $defaultValue, $disableExposure);
 
         return is_array($value) ? $value : $defaultValue;
     }
@@ -327,21 +359,9 @@ final class Intempt
     }
 
     /**
-     * A transport failure returns no choices rather than throwing.
-     *
-     * This is the entire reason $defaultValue is required: a network failure, a 5xx or a timeout
-     * must resolve to the value the caller chose. A flag SDK that throws when the service is
-     * unreachable takes the application down with it, which is the opposite of what a kill switch
-     * is for. A validation mistake still throws, because that is a programming error the caller
-     * can fix rather than a runtime condition to absorb.
-     *
-     * @param list<string>|null $names
-     * @return list<array<string, mixed>>
-     */
-    /**
      * A context the service cannot answer is a caller mistake, so it raises here.
      *
-     * This is deliberately NOT absorbed the way a transport failure is. `chooseOrEmpty()` returns
+     * This is deliberately NOT absorbed the way a transport failure is. `choose()` returns
      * the caller's default on a 5xx or a timeout because a personalization outage must not take the
      * request path down with it. An unanswerable identity is a different thing: it is a programming
      * error, it never recovers, and absorbing it produces an integration that looks healthy while
@@ -360,7 +380,21 @@ final class Intempt
         }
     }
 
-    private function chooseOrEmpty(FlagContext $context, ?array $names): array
+    /**
+     * A transport failure returns no choices rather than throwing.
+     *
+     * This is the entire reason $defaultValue is required: a network failure, a 5xx or a timeout
+     * must resolve to the value the caller chose. A flag SDK that throws when the service is
+     * unreachable takes the application down with it, which is the opposite of what a kill switch
+     * is for. A validation mistake still throws, because that is a programming error the caller
+     * can fix rather than a runtime condition to absorb.
+     *
+     * The failure is still reported: onFlagError, and a FlagError for variationDetail() (INT-7454).
+     *
+     * @param list<string>|null $names
+     * @return array{0: list<array<string, mixed>>, 1: FlagError|null}
+     */
+    private function choose(FlagContext $context, ?array $names, ?string $key, bool $recordExposure): array
     {
         $body = Validate::compact([
             'identification' => Validate::compact([
@@ -381,6 +415,9 @@ final class Intempt
             // it also means device targeting is bypassed rather than honoured, which is correct for
             // a server SDK that has no user agent to read.
             'device' => 'all',
+            // Absent, not true, when recording: a backend without the field (and every older SDK)
+            // records exactly as before. false = evaluate only (CONTRACT-R2 §S4).
+            'exposure' => $recordExposure ? null : false,
         ]);
 
         try {
@@ -389,22 +426,80 @@ final class Intempt
                 $body
             );
         } catch (\Throwable $e) {
-            // config->logger is nullable; config->logger() is the accessor that falls back to a
-            // NullLogger. Reaching for the property directly made the error handler itself throw,
-            // turning a recoverable service failure into a fatal - the exact opposite of what this
-            // catch exists to do. Found by the sample gate, because the unit tests only ever
-            // exercised a 500 with a logger present.
-            $this->config->logger()->warning('[intempt] flag evaluation failed, using defaults');
-
-            return [];
+            return [[], $this->flagFailed(self::classifyFlagError($key, $e))];
         }
 
         if (!is_array($response)) {
-            return [];
+            return [[], $this->flagFailed(new FlagError($key, 'parse'))];
         }
-        $choices = $response['choices'] ?? null;
+        // Missing or null `choices` is an honest "nothing served"; anything else that is not a list
+        // is a malformed answer. Same rule as intempt-node src/flags.ts #choose.
+        $choices = $response['choices'] ?? [];
+        if (!is_array($choices) || !array_is_list($choices)) {
+            return [[], $this->flagFailed(new FlagError($key, 'parse'))];
+        }
 
-        return is_array($choices) ? array_values($choices) : [];
+        return [$choices, null];
+    }
+
+    private static function classifyFlagError(?string $key, \Throwable $error): FlagError
+    {
+        if (!$error instanceof IntemptApiException) {
+            return new FlagError($key, 'network');
+        }
+        $status = $error->status;
+        if ($status === null) {
+            return new FlagError($key, $error->timedOut ? 'timeout' : 'network');
+        }
+        $kind = match (true) {
+            $status === 401 || $status === 403 => 'auth',
+            $status === 408 => 'timeout',
+            $status === 429 || $status >= 500 => 'server',
+            default => 'bad_request',
+        };
+
+        return new FlagError($key, $kind, $status);
+    }
+
+    private function flagFailed(FlagError $error): FlagError
+    {
+        // config->logger is nullable; config->logger() is the accessor that falls back to a
+        // NullLogger. Reaching for the property directly made the error handler itself throw.
+        $logger = $this->config->logger();
+        if ($error->kind === 'auth') {
+            $message = sprintf(
+                '[intempt] flag service rejected the credentials (%d) for %s, sourceId %s; '
+                    . 'every flag returns its default until the API key is fixed',
+                (int) $error->status,
+                (string) $this->config->credentials,
+                $this->config->sourceId ?? 'none'
+            );
+            // Once per client: a bad key fails every call, and an error line per call buries the logs.
+            if ($this->authFailureLogged) {
+                $logger->debug($message);
+            } else {
+                $this->authFailureLogged = true;
+                $logger->error($message);
+            }
+        } else {
+            $logger->warning('[intempt] flag evaluation failed, using defaults', [
+                'kind' => $error->kind,
+                'status' => $error->status,
+            ]);
+        }
+
+        $hook = $this->config->onFlagError;
+        if ($hook !== null) {
+            try {
+                $hook($error);
+            } catch (\Throwable $hookError) {
+                $logger->error('[intempt] onFlagError hook threw; ignored', [
+                    'error' => $hookError->getMessage(),
+                ]);
+            }
+        }
+
+        return $error;
     }
 
     // -- privacy ----------------------------------------------------------
@@ -452,21 +547,33 @@ final class Intempt
 
     // -- lifecycle --------------------------------------------------------
 
-    /** Drain the buffer. A no-op when batching is off. */
-    public function flush(): void
+    /**
+     * Drain the buffer and say how many events were sent and how many failed. Events kept because
+     * the server was unreachable are in neither count. A no-op (0/0) when batching is off.
+     *
+     * @return array{sent: int, failed: int}
+     */
+    public function flush(): array
     {
-        $this->buffer?->flush();
+        return $this->buffer?->flush() ?? ['sent' => 0, 'failed' => 0];
     }
 
-    /** Flush, then release the connection. The client is unusable after. */
-    public function close(): void
+    /**
+     * Flush, then release the connection. The client is unusable after. This is the SDK's shutdown:
+     * anything still buffered when the close budget runs out counts as failed.
+     *
+     * @return array{sent: int, failed: int}
+     */
+    public function close(): array
     {
         if ($this->closed) {
-            return;
+            return ['sent' => 0, 'failed' => 0];
         }
-        $this->buffer?->close();
+        $result = $this->buffer?->close() ?? ['sent' => 0, 'failed' => 0];
         $this->closed = true;
         $this->transport->close();
+
+        return $result;
     }
 
     // -- internals --------------------------------------------------------
@@ -576,23 +683,56 @@ final class Intempt
     }
 
     /** @param list<array<string, mixed>> $events */
-    private function submit(array $events): void
+    private function submit(array $events): bool
     {
         // A closed client throws; an opted-out client returns quietly. Silently
         // discarding a write after close is how events get lost without anyone
         // being told.
         $this->assertOpen();
-        if (!$this->isOptedIn() || $events === []) {
-            return;
+        if (!$this->isOptedIn()) {
+            return false;
+        }
+        if ($events === []) {
+            return true;
         }
         if ($this->buffer !== null) {
+            $accepted = true;
             foreach ($events as $event) {
-                $this->buffer->enqueue($event);
+                $accepted = $this->buffer->enqueue($event) && $accepted;
             }
 
-            return;
+            return $accepted;
         }
-        $this->send($events);
+
+        return $this->deliverNow($events);
+    }
+
+    /**
+     * Direct mode: the same policy as the buffer, but with no queue a request that never reached
+     * the server is dropped and reported rather than kept (CONTRACT-R2 §S1.5).
+     *
+     * @param list<array<string, mixed>> $events
+     */
+    private function deliverNow(array $events): bool
+    {
+        return $this->delivery->deliver(fn () => $this->send($events), $events, false)
+            === Delivery::SENT;
+    }
+
+    /**
+     * Consent follows the delivery table too (CONTRACT-R2 §S1): one resend on 503/429, never a throw.
+     *
+     * @param array<string, mixed> $body
+     *
+     * @internal
+     */
+    public function deliverRecord(string $path, array $body): bool
+    {
+        return $this->delivery->deliver(
+            fn () => $this->transport->post($path, $body),
+            [$body],
+            false
+        ) === Delivery::SENT;
     }
 
     /**

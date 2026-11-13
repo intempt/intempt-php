@@ -41,6 +41,7 @@ declare(strict_types=1);
 use Intempt\BatchOptions;
 use Intempt\FlagContext;
 use Intempt\Intempt;
+use Intempt\DeliveryFailure;
 use Intempt\IntemptApiException;
 
 require __DIR__ . '/../vendor/autoload.php';
@@ -129,6 +130,13 @@ foreach ([
 }
 echo '  ' . str_repeat('-', 76) . "\n\n";
 
+// Writes no longer throw on a rejected delivery (INT-7444); they report it here. Without this a
+// rejected write would PASS.
+$lastFailure = null;
+$recordFailure = static function (DeliveryFailure $failure) use (&$lastFailure): void {
+    $lastFailure = $failure;
+};
+
 $intempt = new Intempt([
     'org' => $org,
     'project' => $project,
@@ -136,6 +144,7 @@ $intempt = new Intempt([
     'sourceId' => $sourceId,
     'host' => $host,
     'scheme' => $scheme,
+    'onDeliveryFailure' => $recordFailure,
 ]);
 
 // --- harness ----------------------------------------------------------------
@@ -143,10 +152,17 @@ $intempt = new Intempt([
 /** @var list<array{name:string,state:string,ms:int,note:string}> $results */
 $results = [];
 
-$step = static function (string $name, callable $fn) use (&$results): void {
+$step = static function (string $name, callable $fn) use (&$results, &$lastFailure): void {
     $started = microtime(true);
+    $lastFailure = null;
     try {
         $value = $fn();
+        if ($lastFailure !== null) {
+            throw new IntemptApiException(
+                'delivery failed: ' . $lastFailure->kind,
+                status: $lastFailure->status,
+            );
+        }
         $ms = (int) ((microtime(true) - $started) * 1000);
         $note = $value === null ? '2xx' : substr((string) $value, 0, 60);
         $results[] = ['name' => $name, 'state' => 'PASS', 'ms' => $ms, 'note' => $note];
@@ -337,7 +353,7 @@ if ($serverApiKey !== null) {
 
 // --- buffered mode ----------------------------------------------------------
 
-$step('flush (5 events buffered, 1 request)', static function () use ($org, $project, $apiKey, $sourceId, $host, $scheme, $userId) {
+$step('flush (5 events buffered, 1 request)', static function () use ($org, $project, $apiKey, $sourceId, $host, $scheme, $userId, $recordFailure) {
     $buffered = new Intempt([
         'org' => $org,
         'project' => $project,
@@ -346,6 +362,7 @@ $step('flush (5 events buffered, 1 request)', static function () use ($org, $pro
         'host' => $host,
         'scheme' => $scheme,
         'batch' => new BatchOptions(size: 50, flushMs: 60_000, maxQueue: 1_000),
+        'onDeliveryFailure' => $recordFailure,
     ]);
     try {
         for ($i = 0; $i < 5; ++$i) {

@@ -19,10 +19,11 @@ to this repo. Where the two disagree, the contract wins and this file is the bug
 - **A wrong-typed value falls back; it is never coerced.** A flag configured as a string and read as
   a boolean returns the caller's default, not `true`. Coercion makes a misconfiguration look like a
   deliberate value.
-- **`variationDetail` is NOT exposed.** It would carry a reason, and the serving response does not
-  send one — so it could only report "off" for a person who was in fact targeted and served, which
-  is the single thing such a method exists to tell you. It stays internal until the platform sends
-  a reason. Do not re-add it, and do not document it.
+- **`variationDetail` is public, in every SDK** (Beso ruling R1, 2026-11-13), together with
+  `FlagDetail`, its `reason`, `disableExposure` and `onFlagError`. What it can tell you is limited
+  by the wire: the serving response sends no reason (INT-7457), so a served value and an unassigned
+  key both read `off`. Its job is to separate a FAILURE (`reason: 'error'` plus the `FlagError`)
+  from "off", which a bare `variation()` cannot. Do not invent a reason the response did not send.
 - **Evaluation is REMOTE only.** No local rule engine, no flag store to poll, and no hashing
   utility: the server decides, so no second implementation can disagree with it.
   `check-no-local-bucketing.mjs` enforces this in CI (EXP-ASSIGN-001..005) and a new bucketing
@@ -36,13 +37,13 @@ to this repo. Where the two disagree, the contract wins and this file is the bug
 
 ## Flags: three things the surface does not say for itself
 
-**`allFlags()` is not a cheaper `variation()`. It enrols the caller in everything.** Omitting `names`
-makes the service evaluate every running Server experience, and every evaluation reports an exposure
-(`ChooserHelper.display` -> `publishEvent` -> Kafka). That is `EXP-SERVE-003` behaving as specified,
-not a defect — but the effect on this surface is that one call at request start records an exposure
-against every running experiment, including keys the code never reads, inflating those denominators
-with people who were shown nothing. Use it to enumerate or to debug; read two keys with two
-`variation()` calls. The endpoint has no suppress flag today, so this cannot be fixed in the SDK.
+**`allFlags()` evaluates; `variation()` exposes.** `allFlags()` sends `exposure: false`, so it no longer
+records an exposure against every running experiment; reading a key with `variation()` (and the typed
+variants) records that key's exposure, and `disableExposure: true` opts a single read out for a
+pre-render or prefetch (INT-7456, CONTRACT-R2 §S4). This needs the audience-service side of INT-7456:
+a backend without the `exposure` field ignores it and still records an exposure for every evaluation
+(`ChooserHelper.display` -> `publishEvent` -> Kafka), so until that ships treat `allFlags()` as an
+enumerate-or-debug call and read two keys with two `variation()` calls.
 
 **Identifier precedence is not the argument order.** `buildAudienceRequest` tests
 `sourceId != null && profileId` non-blank FIRST and only then falls through to `userId`. A context
