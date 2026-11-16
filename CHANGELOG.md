@@ -7,6 +7,15 @@
 - **`hasOptedOut()`** (INT-5411), the inverse of `isOptedIn()`, as the public docs
   already show it.
 
+### Fixed
+
+- **Dates in properties and attributes are sent as ISO-8601 strings** (INT-5413). A
+  `DateTimeInterface` anywhere in `properties`, `traits` or `attributes`, nested
+  arrays included, is sent as UTC `Y-m-d\TH:i:s.v\Z` (e.g. `2026-03-01T15:15:30.123Z`),
+  as the Swift, JS, Node and RN SDKs do. It was sent as PHP's
+  `{"date","timezone_type","timezone"}` object. The `timestamp` option is unchanged
+  (epoch milliseconds).
+
 ## 3.0.0 — unreleased
 
 ### Changed

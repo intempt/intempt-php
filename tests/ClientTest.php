@@ -162,6 +162,38 @@ final class ClientTest extends TestCase
         self::assertSame(['tier' => 'ent'], $payload['accountAttributes']);
     }
 
+    public function testSendsDatesInPropertiesAsIsoUtcStrings(): void
+    {
+        // INT-5413: json_encode turns a DateTime into {"date","timezone_type","timezone"}.
+        $local = new \DateTimeImmutable('2026-03-01 10:15:30.123456', new \DateTimeZone('America/New_York'));
+        $this->client()->track('purchase', [
+            'userId' => 'u1',
+            'timestamp' => 1700000000000,
+            'properties' => [
+                'at' => $local,
+                'nested' => ['when' => new \DateTime('2026-03-01 00:00:00', new \DateTimeZone('UTC')), 'n' => 1],
+                'list' => [$local],
+            ],
+        ]);
+        $payload = self::server()->requests()[0]['body']['track'][0]['payload'][0];
+        self::assertSame(1700000000000, $payload['timestamp']);
+        self::assertSame([
+            'at' => '2026-03-01T15:15:30.123Z',
+            'nested' => ['when' => '2026-03-01T00:00:00.000Z', 'n' => 1],
+            'list' => ['2026-03-01T15:15:30.123Z'],
+        ], $payload['data']);
+    }
+
+    public function testSendsDatesInAttributesAsIsoUtcStrings(): void
+    {
+        $at = new \DateTimeImmutable('2026-03-01T12:00:00.5+02:00');
+        $this->client()->identify(['userId' => 'u1', 'traits' => ['signedUp' => $at]]);
+        $this->client()->group(['userId' => 'u1', 'accountId' => 'acme', 'attributes' => ['since' => ['d' => $at]]]);
+        $requests = self::server()->requests();
+        self::assertSame(['signedUp' => '2026-03-01T10:00:00.500Z'], $requests[0]['body']['track'][0]['payload'][0]['userAttributes']);
+        self::assertSame(['since' => ['d' => '2026-03-01T10:00:00.500Z']], $requests[1]['body']['track'][0]['payload'][0]['accountAttributes']);
+    }
+
     // -- ecommerce --------------------------------------------------------
 
     public function testProductViewed(): void

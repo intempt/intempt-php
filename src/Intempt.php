@@ -646,9 +646,9 @@ final class Intempt
             'profileId' => $options['profileId'] ?? null,
             'userId' => $options['userId'] ?? null,
             'accountId' => $options['accountId'] ?? null,
-            'data' => $options['properties'] ?? null,
-            'userAttributes' => $options['userAttributes'] ?? null,
-            'accountAttributes' => $options['accountAttributes'] ?? null,
+            'data' => Validate::jsonDates($options['properties'] ?? null),
+            'userAttributes' => Validate::jsonDates($options['userAttributes'] ?? null),
+            'accountAttributes' => Validate::jsonDates($options['accountAttributes'] ?? null),
         ]);
 
         return ['name' => $name, 'payload' => [$item]];
