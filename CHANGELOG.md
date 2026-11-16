@@ -15,6 +15,8 @@
   as the Swift, JS, Node and RN SDKs do. It was sent as PHP's
   `{"date","timezone_type","timezone"}` object. The `timestamp` option is unchanged
   (epoch milliseconds).
+- **`ordered()` keeps every product line** (INT-5410). Each line now gets its own
+  `eventId`; the lines shared one, and the server kept only one of them.
 
 ## 3.0.0 — unreleased
 

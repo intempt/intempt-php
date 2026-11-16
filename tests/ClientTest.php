@@ -228,15 +228,20 @@ final class ClientTest extends TestCase
         self::assertSame(['productId' => 'b'], $payload[1]['data']);
     }
 
-    public function testOrderedLinesShareOneEventId(): void
+    public function testOrderedGivesEachLineItsOwnEventId(): void
     {
-        // Bit-compatible with 1.x. Safe because nothing dedupes on eventId.
+        // INT-5410: the server keeps one row per eventId, so shared ids collapsed an order to one line.
         $this->client()->ecommerce->ordered([
             'userId' => 'u1',
-            'products' => [['productId' => 'a'], ['productId' => 'b']],
+            'products' => [['productId' => 'a'], ['productId' => 'b'], ['productId' => 'c']],
         ]);
         $payload = self::server()->requests()[0]['body']['track'][0]['payload'];
-        self::assertSame($payload[0]['eventId'], $payload[1]['eventId']);
+        $ids = array_column($payload, 'eventId');
+        self::assertCount(3, $ids);
+        self::assertCount(3, array_unique($ids));
+        foreach ($ids as $id) {
+            self::assertMatchesRegularExpression('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/', $id);
+        }
     }
 
     public function testOrderedRejectsAnEmptyProductList(): void
