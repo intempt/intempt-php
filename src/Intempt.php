@@ -526,6 +526,11 @@ final class Intempt
         return $this->optedIn && !$this->closed;
     }
 
+    public function hasOptedOut(): bool
+    {
+        return !$this->isOptedIn();
+    }
+
     // -- config -----------------------------------------------------------
 
     /** @param array<string, mixed> $patch */

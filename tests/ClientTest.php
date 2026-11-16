@@ -369,6 +369,19 @@ final class ClientTest extends TestCase
         self::assertCount(1, self::server()->requests());
     }
 
+    public function testHasOptedOutIsTheInverseOfIsOptedIn(): void
+    {
+        // INT-5411: the public docs call hasOptedOut().
+        $client = $this->client();
+        self::assertFalse($client->hasOptedOut());
+        $client->optOut();
+        self::assertTrue($client->hasOptedOut());
+        $client->optIn();
+        self::assertFalse($client->hasOptedOut());
+        $client->close();
+        self::assertTrue($client->hasOptedOut());
+    }
+
     // -- lifecycle --------------------------------------------------------
 
     public function testCallsAfterCloseThrow(): void

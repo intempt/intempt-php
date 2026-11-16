@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`hasOptedOut()`** (INT-5411), the inverse of `isOptedIn()`, as the public docs
+  already show it.
+
 ## 3.0.0 — unreleased
 
 ### Changed
