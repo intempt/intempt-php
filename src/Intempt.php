@@ -657,8 +657,9 @@ final class Intempt
     /**
      * One event carrying several payload items, one per line.
      *
-     * Each line gets its own eventId: the server keeps one row per eventId, so
-     * the 1.x shared id collapsed a multi-product order to one line (INT-5410).
+     * Each line gets its own eventId: payload items of one request that share an
+     * eventId are stored as one row, so the 1.x shared id collapsed a
+     * multi-product order to one line (INT-5410).
      *
      * @param array<string, mixed>       $ids
      * @param list<array<string, mixed>> $lines
