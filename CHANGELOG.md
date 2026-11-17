@@ -1,6 +1,11 @@
 # Changelog
 
-## 3.0.0 — unreleased
+## 3.1.0 — unreleased
+
+### Added
+
+- **`hasOptedOut()`** (INT-5411), the inverse of `isOptedIn()`, as the public docs
+  already show it.
 
 ### Fixed
 
@@ -12,6 +17,8 @@
   (epoch milliseconds).
 - **`ordered()` keeps every product line** (INT-5410). Each line now gets its own
   `eventId`; the lines shared one, and the server kept only one of them.
+
+## 3.0.0 — 2026-11-13
 
 ### Changed
 
@@ -43,8 +50,6 @@
 
 ### Added
 
-- **`hasOptedOut()`** (INT-5411), the inverse of `isOptedIn()`, as the public docs
-  already show it.
 - **Flag errors are visible** (INT-7454). A new `onFlagError` option receives a
   `FlagError` (`key`, `kind` auth/bad_request/server/timeout/network/parse,
   `status`) whenever a flag call falls back to the default; a hook that throws is
