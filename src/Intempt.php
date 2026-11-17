@@ -526,6 +526,11 @@ final class Intempt
         return $this->optedIn && !$this->closed;
     }
 
+    public function hasOptedOut(): bool
+    {
+        return !$this->isOptedIn();
+    }
+
     // -- config -----------------------------------------------------------
 
     /** @param array<string, mixed> $patch */
@@ -641,9 +646,9 @@ final class Intempt
             'profileId' => $options['profileId'] ?? null,
             'userId' => $options['userId'] ?? null,
             'accountId' => $options['accountId'] ?? null,
-            'data' => $options['properties'] ?? null,
-            'userAttributes' => $options['userAttributes'] ?? null,
-            'accountAttributes' => $options['accountAttributes'] ?? null,
+            'data' => Validate::jsonDates($options['properties'] ?? null),
+            'userAttributes' => Validate::jsonDates($options['userAttributes'] ?? null),
+            'accountAttributes' => Validate::jsonDates($options['accountAttributes'] ?? null),
         ]);
 
         return ['name' => $name, 'payload' => [$item]];
@@ -652,9 +657,9 @@ final class Intempt
     /**
      * One event carrying several payload items, one per line.
      *
-     * Kept bit-compatible with the 1.x commerce wire format: the lines share a
-     * single eventId. Nothing on the ingestion path dedupes on eventId, so this
-     * cannot collapse rows.
+     * Each line gets its own eventId: payload items of one request that share an
+     * eventId are stored as one row, so the 1.x shared id collapsed a
+     * multi-product order to one line (INT-5410).
      *
      * @param array<string, mixed>       $ids
      * @param list<array<string, mixed>> $lines
@@ -663,14 +668,13 @@ final class Intempt
      */
     public function trackLines(string $name, array $ids, array $lines): void
     {
-        $eventId = Validate::uuid4();
         $raw = $ids['timestamp'] ?? null;
         $millis = $raw !== null ? Validate::timestamp($raw) : Validate::nowMs();
 
         $payload = [];
         foreach ($lines as $line) {
             $payload[] = Validate::compact([
-                'eventId' => $eventId,
+                'eventId' => Validate::uuid4(),
                 'timestamp' => $millis,
                 'profileId' => $ids['profileId'] ?? null,
                 'userId' => $ids['userId'] ?? null,

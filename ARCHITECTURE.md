@@ -92,9 +92,12 @@ direct mode and consent.
 
 ### Delivery is at-least-once
 
-Ingestion has no idempotency key. `event_id` travels in the payload but is not a
-column in the events table, and the table is a plain `MergeTree` — nothing collapses
-duplicates. That is why a timeout after the request was written is never resent.
+Ingestion has no idempotency key. Inside one request, payload items that share an
+`event_id` are stored as one row: measured 2026-11-16 (INT-5415, INT-5410), an order
+with two lines and one shared id stored one row, and with an id per line it stored two.
+So every payload item carries its own `event_id`. Whether a resend of a request that
+already landed is collapsed is not measured, so the SDK assumes it is not. That is why
+a timeout after the request was written is never resent.
 
 ### close() is bounded
 

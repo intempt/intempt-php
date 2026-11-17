@@ -59,7 +59,7 @@ By default each call sends one request and returns when the server responds.
 | `variationDetail($key, $context, $default, $disableExposure = false)` | `FlagDetail` | `POST …/optimization/choose-api` |
 | `boolVariation` / `stringVariation` / `numberVariation` / `jsonVariation` | typed value | `POST …/optimization/choose-api` |
 | `allFlags($context)` | `array` | `POST …/optimization/choose-api` (no exposure) |
-| `optIn()` / `optOut()` / `isOptedIn()` | — | — |
+| `optIn()` / `optOut()` / `isOptedIn()` / `hasOptedOut()` | — | — |
 | `flush()` / `close()` | `array{sent, failed}` | — |
 | `setConfig($patch)` / `config()` / `buffered()` | — | — |
 

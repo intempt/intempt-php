@@ -142,6 +142,26 @@ final class Validate
         return array_filter($values, static fn ($value) => $value !== null);
     }
 
+    /**
+     * DateTimeInterface values, at any depth, as ISO-8601 UTC with milliseconds.
+     *
+     * json_encode would serialise them as {"date","timezone_type","timezone"};
+     * this string is the shape the Swift, JS, Node and RN SDKs send.
+     */
+    public static function jsonDates(mixed $value): mixed
+    {
+        if ($value instanceof \DateTimeInterface) {
+            return \DateTimeImmutable::createFromInterface($value)
+                ->setTimezone(new \DateTimeZone('UTC'))
+                ->format('Y-m-d\\TH:i:s.v\\Z');
+        }
+        if (is_array($value)) {
+            return array_map(self::jsonDates(...), $value);
+        }
+
+        return $value;
+    }
+
     /** RFC 4122 v4, without pulling in a uuid dependency for one function. */
     public static function uuid4(): string
     {

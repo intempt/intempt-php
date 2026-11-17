@@ -2,6 +2,17 @@
 
 ## 3.0.0 — unreleased
 
+### Fixed
+
+- **Dates in properties and attributes are sent as ISO-8601 strings** (INT-5413). A
+  `DateTimeInterface` anywhere in `properties`, `traits` or `attributes`, nested
+  arrays included, is sent as UTC `Y-m-d\TH:i:s.v\Z` (e.g. `2026-03-01T15:15:30.123Z`),
+  as the Swift, JS, Node and RN SDKs do. It was sent as PHP's
+  `{"date","timezone_type","timezone"}` object. The `timestamp` option is unchanged
+  (epoch milliseconds).
+- **`ordered()` keeps every product line** (INT-5410). Each line now gets its own
+  `eventId`; the lines shared one, and the server kept only one of them.
+
 ### Changed
 
 - **Delivery is sent once — breaking for anyone relying on retries or on exceptions**
@@ -32,6 +43,8 @@
 
 ### Added
 
+- **`hasOptedOut()`** (INT-5411), the inverse of `isOptedIn()`, as the public docs
+  already show it.
 - **Flag errors are visible** (INT-7454). A new `onFlagError` option receives a
   `FlagError` (`key`, `kind` auth/bad_request/server/timeout/network/parse,
   `status`) whenever a flag call falls back to the default; a hook that throws is
